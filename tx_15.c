@@ -61,8 +61,8 @@ int main(void)
     // LO
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
 
-    // Calibrate near operating BW
-    CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
+    // // Calibrate near operating BW
+    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
 
     // 3) NCO: program 15 MHz and select downconvert so RF = 30 - 15 = 15 MHz
     {
