@@ -1,11 +1,6 @@
-// lime_tx_test.c
-// Test patterns for LimeSDR TX using LimeSuite + tinySA measurements.
+// lime_test.c — LimeSDR TX test patterns for tinySA measurement (pure C)
 //
-// Modes: tone, twotone, sweep, noise
-//   - Prints actual applied parameters after each set.
-//   - Safe shutdown: zero burst, stop/destroy stream, disable TX.
-//
-// Build: gcc -O2 -Wall -Wextra -o lime_tx_test lime_tx_test.c -lLimeSuite -lm
+// Build: gcc -O2 -Wall -Wextra -o lime_test lime_test.c -lLimeSuite -lm
 
 #include "lime/LimeSuite.h"
 #include <stdio.h>
@@ -21,7 +16,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// ---------- Defaults (tweak as needed) ----------
+// ---------- Defaults ----------
 #define CH                0              // TX channel A
 #define HOST_SR_HZ        5000000        // 5 Msps USB
 #define OVERSAMPLE        8              // RF SR ≈ 40 Msps (NCO range up to ~20 MHz)
@@ -41,10 +36,10 @@
 static volatile int g_run = 1;
 static void on_sigint(int s){ (void)s; g_run = 0; }
 
-typedef enum { MODE_TONE, MODE_TWOTONE, MODE_SWEEP, MODE_NOISE } mode_t;
+typedef enum { MODE_TONE, MODE_TWOTONE, MODE_SWEEP, MODE_NOISE } tx_mode_t;
 
 typedef struct {
-    mode_t mode;
+    tx_mode_t mode;
     double rf_target_hz;       // for tone/twotone/noise
     double amp_fs;             // 0..1 total headroom
     unsigned gain_db;
@@ -54,7 +49,7 @@ typedef struct {
     double sweep_start_hz, sweep_stop_hz, sweep_step_hz;
     int dwell_ms;
     // noise
-    double noise_bw_hz;        // approximate occupied BW (<= RF_SR/4 recommended)
+    double noise_bw_hz;        // (PRBS-based; not strictly enforced)
 } cfg_t;
 
 static void usage(const char* exe){
@@ -71,8 +66,8 @@ static void usage(const char* exe){
     "  --sweep-start <Hz> --sweep-stop <Hz> --sweep-step <Hz>\n"
     "  --dwell-ms <ms>       per-step dwell (default 30)\n"
     "Noise:\n"
-    "  --noise-bw <Hz>       approximate occupied BW (default 1e6)\n"
-    , exe, TX_GAIN_DB);
+    "  --noise-bw <Hz>       approximate occupied BW (default 1e6)\n",
+    exe, TX_GAIN_DB);
 }
 
 static bool parse_args(int argc, char** argv, cfg_t* c){
@@ -94,16 +89,27 @@ static bool parse_args(int argc, char** argv, cfg_t* c){
             else if (!strcmp(argv[i],"sweep")) c->mode=MODE_SWEEP;
             else if (!strcmp(argv[i],"noise")) c->mode=MODE_NOISE;
             else { usage(argv[0]); return false; }
-        } else if (!strcmp(argv[i],"--rf") && i+1<argc){ c->rf_target_hz = atof(argv[++i]); }
-        } else if (!strcmp(argv[i],"--gain") && i+1<argc){ c->gain_db = (unsigned)atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--amp") && i+1<argc){ c->amp_fs = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--tone-delta") && i+1<argc){ c->tone_delta_hz = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--sweep-start") && i+1<argc){ c->sweep_start_hz = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--sweep-stop") && i+1<argc){ c->sweep_stop_hz = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--sweep-step") && i+1<argc){ c->sweep_step_hz = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--dwell-ms") && i+1<argc){ c->dwell_ms = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--noise-bw") && i+1<argc){ c->noise_bw_hz = atof(argv[++i]); }
-        else { usage(argv[0]); return false; }
+        } else if (!strcmp(argv[i],"--rf") && i+1<argc){
+            c->rf_target_hz = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--gain") && i+1<argc){
+            c->gain_db = (unsigned)atoi(argv[++i]);
+        } else if (!strcmp(argv[i],"--amp") && i+1<argc){
+            c->amp_fs = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--tone-delta") && i+1<argc){
+            c->tone_delta_hz = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--sweep-start") && i+1<argc){
+            c->sweep_start_hz = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--sweep-stop") && i+1<argc){
+            c->sweep_stop_hz = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--sweep-step") && i+1<argc){
+            c->sweep_step_hz = atof(argv[++i]);
+        } else if (!strcmp(argv[i],"--dwell-ms") && i+1<argc){
+            c->dwell_ms = atoi(argv[++i]);
+        } else if (!strcmp(argv[i],"--noise-bw") && i+1<argc){
+            c->noise_bw_hz = atof(argv[++i]);
+        } else {
+            usage(argv[0]); return false;
+        }
     }
     return true;
 }
@@ -120,11 +126,9 @@ static void print_gain(lms_device_t* dev){
         printf("Set/Get: TX Gain = %u dB\n", g);
 }
 static void print_lpf(lms_device_t* dev){
-#ifdef LMS_GetLPFBW
     float_type bw = 0;
     if (!LMS_GetLPFBW(dev, LMS_CH_TX, CH, &bw))
         printf("Set/Get: TX LPF BW = %.2f MHz\n", bw/1e6);
-#endif
 }
 static void print_lo(lms_device_t* dev){
     double lof = 0;
@@ -134,50 +138,26 @@ static void print_lo(lms_device_t* dev){
 static void print_nco(lms_device_t* dev){
     int idx = LMS_GetNCOIndex(dev, true, CH);
     if (idx >= 0){
-#ifdef LMS_GetNCOFrequency
         double freqs[16]={0}; double ph=0.0;
         if (!LMS_GetNCOFrequency(dev, true, CH, freqs, &ph))
             printf("Set/Get: NCO idx=%d, f=%.6f MHz, mode=%s\n", idx, freqs[idx]/1e6, "downconv");
-#else
-        printf("Set/Get: NCO idx=%d\n", idx);
-#endif
     }
 }
 
-// ----- Signal generators -----
-static void fill_tone_iq(int16_t* i16, size_t n, double amp, double phase_incr){
-    // DC tone in baseband → tone at RF after NCO; but we also support direct BB tone if desired.
-    // Here we generate a complex exponential e^{j * w * n} at baseband.
-    double ph = 0.0;
-    for (size_t k=0;k<n;k++){
-        float s = (float)(amp * sin(ph));
-        // 90-deg shift for Q to make a clean single-side signal at baseband if needed
-        float c = (float)(amp * cos(ph));
-        // Here we transmit "I=c, Q=s" i.e., complex tone
-        i16[2*k+0] = (int16_t)lrintf(c * 32767.0f);
-        i16[2*k+1] = (int16_t)lrintf(s * 32767.0f);
-        ph += phase_incr;
-        if (ph > 2*M_PI) ph -= 2*M_PI;
-    }
-}
-
-static void fill_two_tone_iq(int16_t* i16, size_t n, double amp, double phase_incr1, double phase_incr2){
-    // Two sinusoidal tones summed on I (Q=0) to provoke IMD at RF.
+// ----- Generators -----
+static void fill_two_tone_iq(int16_t* i16, size_t n, double amp, double w1, double w2){
     double ph1=0.0, ph2=0.0;
-    // split amplitude to avoid clipping
-    double a = amp * 0.5;
+    double a = amp * 0.5; // split amplitude
     for (size_t k=0;k<n;k++){
-        float s = (float)((a*sin(ph1) + a*sin(ph2)));
+        float s = (float)(a*sin(ph1) + a*sin(ph2));
         i16[2*k+0] = (int16_t)lrintf(s * 32767.0f);
         i16[2*k+1] = 0;
-        ph1 += phase_incr1; if (ph1>2*M_PI) ph1-=2*M_PI;
-        ph2 += phase_incr2; if (ph2>2*M_PI) ph2-=2*M_PI;
+        ph1 += w1; if (ph1>2*M_PI) ph1-=2*M_PI;
+        ph2 += w2; if (ph2>2*M_PI) ph2-=2*M_PI;
     }
 }
-
 static uint32_t xorshift32(uint32_t x){ x ^= x<<13; x ^= x>>17; x ^= x<<5; return x; }
 static void fill_noise_iq(int16_t* i16, size_t n, double amp){
-    // Simple white-ish PRBS noise on I & Q, then scaled.
     static uint32_t s1=0x12345678, s2=0x87654321;
     for (size_t k=0;k<n;k++){
         s1 = xorshift32(s1); s2 = xorshift32(s2);
@@ -191,6 +171,24 @@ static void fill_noise_iq(int16_t* i16, size_t n, double amp){
 // Sleep helper
 static void msleep(int ms){
     struct timespec ts; ts.tv_sec = ms/1000; ts.tv_nsec = (ms%1000)*1000000L; nanosleep(&ts, NULL);
+}
+
+// Program NCO to get desired RF (downconvert mode around fixed LO)
+static int set_rf(lms_device_t* dev, double rf_sr, double rf_hz){
+    double nco = LO_HZ - rf_hz; // want RF = LO - NCO
+    double nco_max = rf_sr/2.0 - 1.0; // guard
+    if (fabs(nco) > nco_max){
+        fprintf(stderr,"RF %.3f MHz out of NCO range (|NCO| <= %.3f MHz)\n", rf_hz/1e6, nco_max/1e6);
+        return -1;
+    }
+    double freqs[16] = {0};
+    freqs[0] = fabs(nco);
+    if (LMS_SetNCOFrequency(dev, true, CH, freqs, 0.0)) return -1;
+    // downconvert flag = true when NCO subtracts from LO
+    bool downconvert = (nco >= 0);
+    if (LMS_SetNCOIndex(dev, true, CH, 0, downconvert)) return -1;
+    print_nco(dev);
+    return 0;
 }
 
 int main(int argc, char** argv){
@@ -228,22 +226,8 @@ int main(int argc, char** argv){
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
     print_lo(dev);
 
-    // Make sure requested RF is reachable via NCO around fixed LO
-    const double nco_max = rf_sr/2.0 - 1.0; // guard 1 Hz
-    // Function to program NCO for a given RF
-    auto set_rf = [&](double rf_hz)->int {
-        double nco = LO_HZ - rf_hz; // downconvert
-        if (fabs(nco) > nco_max){ fprintf(stderr,"RF %.3f MHz out of NCO range (|NCO| <= %.3f MHz)\n", rf_hz/1e6, nco_max/1e6); return -1; }
-        double freqs[16] = {0};
-        freqs[0] = fabs(nco);
-        CHECK(LMS_SetNCOFrequency(dev, true, CH, freqs, 0.0));
-        CHECK(LMS_SetNCOIndex    (dev, true, CH, 0, (nco>=0))); // true = downconvert if positive offset
-        print_nco(dev);
-        return 0;
-    };
-
-    if (C.mode == MODE_TONE || C.mode == MODE_TWOTONE || C.mode == MODE_NOISE){
-        if (set_rf(C.rf_target_hz) != 0) goto cleanup;
+    if (C.mode != MODE_SWEEP){
+        if (set_rf(dev, rf_sr, C.rf_target_hz) != 0) goto cleanup;
     }
 
     // ----- Stream -----
@@ -261,17 +245,13 @@ int main(int argc, char** argv){
     printf("Mode: %s\n",
         C.mode==MODE_TONE?"tone":C.mode==MODE_TWOTONE?"twotone":C.mode==MODE_SWEEP?"sweep":"noise");
 
-    // ----- Generate & send -----
     if (C.mode == MODE_TONE){
-        // Baseband *constant* IQ gives a pure RF tone after NCO,
-        // but we also offer a tiny BB dither to keep the DMA alive uniformly.
+        // Constant DC IQ -> CW at RF after NCO
         const int16_t I = (int16_t)lrint(C.amp_fs * 32767.0);
         const int16_t Q = 0;
         for (size_t i=0;i<BUF_SAMPLES;i++){ buf[2*i+0]=I; buf[2*i+1]=Q; }
-
         printf("TX: CW @ %.6f MHz, gain=%u dB, amp=%.2f FS. Ctrl+C to stop.\n",
                C.rf_target_hz/1e6, C.gain_db, C.amp_fs);
-
         while (g_run){
             lms_stream_meta_t m; memset(&m,0,sizeof(m));
             if (LMS_SendStream(&txs, buf, BUF_SAMPLES, &m, SEND_TIMEOUT_MS) < 0){
@@ -280,15 +260,10 @@ int main(int argc, char** argv){
         }
     }
     else if (C.mode == MODE_TWOTONE){
-        // Generate two baseband tones at ±delta, which produce two RF tones around the carrier.
-        double f1 =  C.tone_delta_hz;
-        double f2 = -C.tone_delta_hz;
-        double w1 = 2.0*M_PI*f1/host_sr;
-        double w2 = 2.0*M_PI*f2/host_sr;
-
+        double w1 = 2.0*M_PI*(+C.tone_delta_hz)/host_sr;
+        double w2 = 2.0*M_PI*(-C.tone_delta_hz)/host_sr;
         printf("TX: Two-tone @ RF=%.6f MHz (±%.0f Hz), gain=%u dB, total amp=%.2f FS. Ctrl+C to stop.\n",
                C.rf_target_hz/1e6, C.tone_delta_hz, C.gain_db, C.amp_fs);
-
         while (g_run){
             fill_two_tone_iq(buf, BUF_SAMPLES, C.amp_fs, w1, w2);
             lms_stream_meta_t m; memset(&m,0,sizeof(m));
@@ -298,40 +273,32 @@ int main(int argc, char** argv){
         }
     }
     else if (C.mode == MODE_SWEEP){
-        printf("TX: Sweep %.3f → %.3f MHz, step %.3f kHz, dwell %d ms. Ctrl+C to stop.\n",
-               C.sweep_start_hz/1e6, C.sweep_stop_hz/1e6, C.sweep_step_hz/1e3, C.dwell_ms);
-
-        // Use a constant DC IQ; RF frequency is moved by NCO steps.
         const int16_t I = (int16_t)lrint(0.70 * 32767.0);
         const int16_t Q = 0;
         for (size_t i=0;i<BUF_SAMPLES;i++){ buf[2*i+0]=I; buf[2*i+1]=Q; }
+        printf("TX: Sweep %.3f → %.3f MHz, step %.3f kHz, dwell %d ms. Ctrl+C to stop.\n",
+               C.sweep_start_hz/1e6, C.sweep_stop_hz/1e6, C.sweep_step_hz/1e3, C.dwell_ms);
 
         for (double rf=C.sweep_start_hz; g_run; rf += C.sweep_step_hz){
             if (rf > C.sweep_stop_hz) rf = C.sweep_start_hz;
-            if (set_rf(rf) != 0) break;
+            if (set_rf(dev, rf_sr, rf) != 0) break;
 
-            // Push a few buffers during dwell
+            // Dwell: push a few buffers
             int t = 0;
             while (g_run && t < C.dwell_ms){
                 lms_stream_meta_t m; memset(&m,0,sizeof(m));
                 if (LMS_SendStream(&txs, buf, BUF_SAMPLES, &m, SEND_TIMEOUT_MS) < 0){
                     fprintf(stderr,"LMS_SendStream: %s\n", LMS_GetLastErrorMessage()); g_run=0; break;
                 }
-                // approx time per send
                 double ms = (1000.0 * BUF_SAMPLES) / host_sr;
                 t += (int)ms;
                 if (t < C.dwell_ms) msleep(1);
             }
         }
     }
-    else if (C.mode == MODE_NOISE){
-        // Wide-ish baseband noise → observe ACPR / spectral mask on analyzer.
-        // Note: This is simple PRBS noise; for standards-like masks, feed a known waveform.
+    else { // MODE_NOISE
         printf("TX: Noise centered at %.6f MHz, ~BW=%.0f kHz, gain=%u dB, amp=%.2f FS. Ctrl+C to stop.\n",
                C.rf_target_hz/1e6, C.noise_bw_hz/1e3, C.gain_db, C.amp_fs);
-
-        // Optionally shape the noise by simple lowpass in frequency domain;
-        // to keep this portable and fast, we’ll do time-domain PRBS only.
         while (g_run){
             fill_noise_iq(buf, BUF_SAMPLES, C.amp_fs);
             lms_stream_meta_t m; memset(&m,0,sizeof(m));
@@ -344,7 +311,7 @@ int main(int argc, char** argv){
     printf("\nStopping…\n");
 
 cleanup:
-    // Send one zero buffer to mute RF
+    // Mute: send a zero buffer once, then stop/destroy, disable channel
     if (txs.handle){
         int16_t* z = (int16_t*)calloc(2*BUF_SAMPLES, sizeof(int16_t));
         if (z){
