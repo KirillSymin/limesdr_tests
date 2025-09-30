@@ -106,9 +106,9 @@ int main(void)
     CHECK(LMS_GetLOFrequency(dev, LMS_CH_TX, ch, &lo_rd));
     printf("TX LO: %.6f MHz\n", lo_rd/1e6);
 
-    /* 7) Calibrate */
-    CHECK(LMS_Calibrate(dev, LMS_CH_TX, ch, CFG_CAL_BW, 0));
-    printf("TX Calibrate done\n");
+    // /* 7) Calibrate */
+    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, ch, CFG_CAL_BW, 0));
+    // printf("TX Calibrate done\n");
 
     /* 8) Program NCO table (float_type == double in your headers) */
     {
