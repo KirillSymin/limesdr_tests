@@ -1,8 +1,3 @@
-// build:  gcc -O2 -Wall -Wextra -o lime_tx_nco lime_tx_nco.c -lLimeSuite
-// example:
-//   ./lime_tx_nco --host-sr 5M --oversample 32 --tx-lpf-bw 20M \
-//                 --lo 30M --nco 15M --nco-downconvert true --tx-gain 40
-
 #include "lime/LimeSuite.h"
 #include <stdio.h>
 #include <stdlib.h>
