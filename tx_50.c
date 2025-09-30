@@ -13,7 +13,7 @@
 #define OVERSAMPLE          8            // ≈40 Msps RF-side
 #define TX_LPF_BW_HZ        50000000     // 50 MHz TX LPF (your original)
 #define RX_LPF_BW_HZ        10000000     // 10 MHz RX LPF to help cal
-#define TX_GAIN_DB          40
+#define TX_GAIN_DB          50
 
 #define FIFO_SIZE_SAMPLES   (1<<17)
 #define BUF_SAMPLES         8192
