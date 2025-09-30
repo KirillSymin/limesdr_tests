@@ -9,7 +9,7 @@ from SoapySDR import SOAPY_SDR_TX  # direction constants
 CH                 = 0              # TX channel A
 HOST_SR_HZ         = 5_000_000      # 5 Msps host-side
 OVERSAMPLE         = 8              # target RF ≈ HOST_SR * 8 = 40 Msps (Lime internal)
-TX_LPF_BW_HZ       = 50_000_000     # 50 MHz
+TX_LPF_BW_HZ       = 20_000_000     # 50 MHz
 LO_HZ              = 30_000_000     # 30 MHz LO
 NCO_FREQ_HZ        = 15_000_000     # 15 MHz NCO magnitude
 NCO_DOWNCONVERT    = True           # RF = LO - NCO  (so set BB = -NCO)
