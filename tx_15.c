@@ -34,16 +34,6 @@ static void print_sr(lms_device_t* dev){
         printf("Set/Get: SampleRate host=%.2f Msps, rf=%.2f Msps\n", host/1e6, rf/1e6);
 }
 
-static void print_lpf(lms_device_t* dev){
-#ifdef LMS_GetLPFBW
-    float_type bw = 0;
-    if (!LMS_GetLPFBW(dev, LMS_CH_TX, CH, &bw))
-        printf("Set/Get: TX LPF BW = %.2f MHz\n", bw/1e6);
-#else
-    printf("Note: LMS_GetLPFBW not available in this LimeSuite; skipping BW readback.\n");
-#endif
-}
-
 static void print_gain(lms_device_t* dev){
     unsigned int g = 0;
     if (!LMS_GetGaindB(dev, LMS_CH_TX, CH, &g))
@@ -57,18 +47,8 @@ static void print_lo(lms_device_t* dev){
 }
 
 static void print_nco(lms_device_t* dev){
-#ifdef LMS_GetNCOFrequency
-    double freqs[16]={0};
-    double ph=0.0;
-    if (!LMS_GetNCOFrequency(dev, true, CH, freqs, &ph)) {
-        int idx = LMS_GetNCOIndex(dev, true, CH);
-        printf("Set/Get: NCO idx=%d, f=%.6f MHz, mode=%s\n",
-               idx, freqs[idx]/1e6, (LMS_GetNCOIndex(dev, true, CH)>=0 && NCO_DOWNCONVERT)?"downconv":"upconv");
-    }
-#else
     int idx = LMS_GetNCOIndex(dev, true, CH);
     printf("Set/Get: NCO idx=%d (no frequency readback in this LimeSuite)\n", idx);
-#endif
 }
 
 int main(void)
@@ -96,7 +76,6 @@ int main(void)
 
     // TX LPF/BW
     CHECK(LMS_SetLPFBW(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ));
-    print_lpf(dev);
 
     // Gain
     CHECK(LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_DB));
