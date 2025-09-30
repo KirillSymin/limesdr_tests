@@ -22,6 +22,8 @@
 #define CFG_TONE_Q           0
 #define CFG_BUF_SAMPLES      4096
 #define CFG_SEND_TIMEOUT_MS  1000
+#define CFG_HOST_SR 5e6
+#define CFG_LPF_BW  50e6
 
 /* pick the right enum name depending on compiler */
 #ifdef __cplusplus
@@ -105,6 +107,12 @@ int main(void)
     double lo_rd = 0.0;
     CHECK(LMS_GetLOFrequency(dev, LMS_CH_TX, ch, &lo_rd));
     printf("TX LO: %.6f MHz\n", lo_rd/1e6);
+
+    // set sample rate
+    double host_sr = CFG_HOST_SR, rf_sr = 0.0;
+    CHECK(LMS_SetSampleRate(dev, host_sr, 8));   // <— oversample 8x
+    CHECK(LMS_GetSampleRate(dev, LMS_CH_TX, ch, &host_sr, &rf_sr));
+    printf("TX sample rate: host=%.6f Msps  rf=%.6f Msps\n", host_sr/1e6, rf_sr/1e6);
 
     // /* 7) Calibrate */
     // CHECK(LMS_Calibrate(dev, LMS_CH_TX, ch, CFG_CAL_BW, 0));
