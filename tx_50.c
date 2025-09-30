@@ -19,6 +19,12 @@ int main(void)
     LMS_Init(dev);
     LMS_EnableChannel(dev, LMS_CH_TX, 0, true);
 
+    // Set TX gain
+    LMS_SetGaindB(dev, LMS_CH_TX, 0, 40);
+    unsigned int g = 0;
+    LMS_GetGaindB(dev, LMS_CH_TX, 0, &g);
+    printf("TX gain set to %u dB\n", g);
+
     // Set sample rate (5 Msps is enough here)
     LMS_SetSampleRate(dev, 5e6, 1);
 
@@ -42,13 +48,13 @@ int main(void)
     int16_t* buf = malloc(2*N*sizeof(int16_t));
     for (size_t i=0;i<N;i++){ buf[2*i]= (int16_t)(0.7*32767); buf[2*i+1]=0; }
 
-    printf("Transmitting carrier at 50 MHz... Press Ctrl+C to stop\n");
+    printf("Transmitting carrier at 50 MHz with gain %u dB... Press Ctrl+C to stop\n", g);
     while (1) {
         lms_stream_meta_t meta = {0};
         LMS_SendStream(&txs, buf, N, &meta, 1000);
     }
 
-    // Cleanup (unreachable here, but for completeness)
+    // Cleanup (never reached)
     free(buf);
     LMS_StopStream(&txs);
     LMS_DestroyStream(dev, &txs);
