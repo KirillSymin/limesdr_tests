@@ -67,8 +67,7 @@ except Exception:
 
 # -------------------- TX stream --------------------
 # Format 'CS16' = 16-bit IQ (matches LMS_FMT_I16)
-st_args = {"bufferLength": STREAM_BUFFER_LEN}  # driver-specific hint; safe to omit
-tx_stream = sdr.setupStream(SOAPY_SDR_TX, "CS16", [CH], st_args)
+tx_stream = sdr.setupStream(SOAPY_SDR_TX, "CS16", [CH])
 sdr.activateStream(tx_stream)  # start
 
 print(f"TX stream started (bufferLength={STREAM_BUFFER_LEN}, fmt=CS16).")
