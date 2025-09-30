@@ -78,7 +78,7 @@ int main(void)
 
     /* 3) Sample rate */
     double host_sr = CFG_HOST_SR, rf_sr = 0.0;
-    CHECK(LMS_SetSampleRate(dev, host_sr, 1));
+    CHECK(LMS_SetSampleRate(dev, host_sr, 8));   // <— oversample 8x
     CHECK(LMS_GetSampleRate(dev, LMS_CH_TX, ch, &host_sr, &rf_sr));
     printf("TX sample rate: host=%.6f Msps  rf=%.6f Msps\n", host_sr/1e6, rf_sr/1e6);
 
@@ -105,12 +105,6 @@ int main(void)
     double lo_rd = 0.0;
     CHECK(LMS_GetLOFrequency(dev, LMS_CH_TX, ch, &lo_rd));
     printf("TX LO: %.6f MHz\n", lo_rd/1e6);
-
-    // set sample rate
-    double host_sr = CFG_HOST_SR, rf_sr = 0.0;
-    CHECK(LMS_SetSampleRate(dev, host_sr, 8));   // <— oversample 8x
-    CHECK(LMS_GetSampleRate(dev, LMS_CH_TX, ch, &host_sr, &rf_sr));
-    printf("TX sample rate: host=%.6f Msps  rf=%.6f Msps\n", host_sr/1e6, rf_sr/1e6);
 
     // /* 7) Calibrate */
     // CHECK(LMS_Calibrate(dev, LMS_CH_TX, ch, CFG_CAL_BW, 0));
