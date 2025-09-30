@@ -1,232 +1,113 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import signal
 import sys
-import time
-from math import isfinite
-
 import numpy as np
+import SoapySDR
+from SoapySDR import SOAPY_SDR_TX  # direction constants
 
-# You need the LimeSuite Python bindings available as `LimeSuite`
-# On most systems they come with LimeSuite installs; the module is often named `LimeSuite`.
-# e.g. on Ubuntu from source packages, or via your distro's LimeSuite build.
-import LimeSuite as lms  # SWIG bindings
-
-# -----------------------------
-# constants (mirroring the C)
-# -----------------------------
-CH                = 0           # TX channel A
-HOST_SR_HZ        = 5_000_000   # 5 Msps over USB
-OVERSAMPLE        = 8           # RF ≈ HOST_SR * OVERSAMPLE = 40 Msps
-TX_LPF_BW_HZ      = 50_000_000  # 50 MHz LPF
-LO_HZ             = 30_000_000  # 30 MHz LO (PLL-friendly)
-NCO_FREQ_HZ       = 15_000_000  # 15 MHz NCO magnitude
-NCO_INDEX         = 0
-NCO_DOWNCONVERT   = True        # RF = LO - NCO = 15 MHz
-TX_GAIN_DB        = 40          # moderate TX gain
-FIFO_SIZE_SAMPLES = 1 << 17     # bigger FIFO for stability
-BUF_SAMPLES       = 8192        # larger chunk reduces IRQ/USB churn
-SEND_TIMEOUT_MS   = 1000
-TONE_SCALE        = 0.70        # 70% FS to avoid DAC clipping
-
-# -----------------------------
-# helpers
-# -----------------------------
-
-def _errstr():
-    try:
-        return lms.LMS_GetLastErrorMessage().decode("utf-8", "ignore")
-    except Exception:
-        return "<unknown LimeSuite error>"
-
-def CHECK(code):
-    if code != 0:
-        raise RuntimeError(_errstr())
-
-def print_sr(dev):
-    host = lms.doubleArray(1)
-    rf = lms.doubleArray(1)
-    if lms.LMS_GetSampleRate(dev, lms.LMS_CH_TX, CH, host, rf) == 0:
-        print(f"Set/Get: SampleRate host={host[0]/1e6:.2f} Msps, rf={rf[0]/1e6:.2f} Msps")
-
-def print_gain(dev):
-    g = lms.uint32Array(1)
-    if lms.LMS_GetGaindB(dev, lms.LMS_CH_TX, CH, g) == 0:
-        print(f"Set/Get: TX Gain = {int(g[0])} dB")
-
-def print_lo(dev):
-    lof = lms.doubleArray(1)
-    if lms.LMS_GetLOFrequency(dev, lms.LMS_CH_TX, CH, lof) == 0:
-        print(f"Set/Get: LO = {lof[0]/1e6:.6f} MHz")
-
-def print_nco(dev):
-    idx = lms.LMS_GetNCOIndex(dev, True, CH)
-    print(f"Set/Get: NCO idx={idx} (no frequency readback in this LimeSuite)")
+# -------------------- Constants (match your C example) --------------------
+CH                 = 0              # TX channel A
+HOST_SR_HZ         = 5_000_000      # 5 Msps host-side
+OVERSAMPLE         = 8              # target RF ≈ HOST_SR * 8 = 40 Msps (Lime internal)
+TX_LPF_BW_HZ       = 50_000_000     # 50 MHz
+LO_HZ              = 30_000_000     # 30 MHz LO
+NCO_FREQ_HZ        = 15_000_000     # 15 MHz NCO magnitude
+NCO_DOWNCONVERT    = True           # RF = LO - NCO  (so set BB = -NCO)
+TX_GAIN_DB         = 40             # moderate TX gain
+BUF_SAMPLES        = 8192           # chunk size (complex samples)
+SEND_TIMEOUT_US    = 1_000_000      # 1 s
+TONE_SCALE         = 0.70           # 70% full scale
+STREAM_BUFFER_LEN  = 131072         # driver hint (samples); adjust if needed
 
 keep_running = True
-def _on_sigint(_sig, _frm):
+def on_sigint(signum, frame):
     global keep_running
     keep_running = False
+signal.signal(signal.SIGINT, on_sigint)
 
-# -----------------------------
-# main
-# -----------------------------
+# -------------------- Open first Lime device via Soapy --------------------
+# If you have multiple SDRs, pass args like dict(driver="lime", serial="XXXX")
+devs = SoapySDR.Device.enumerate(dict(driver="lime"))
+if not devs:
+    print("No LimeSDR found", file=sys.stderr)
+    sys.exit(1)
 
-def main():
-    signal.signal(signal.SIGINT, _on_sigint)
+sdr = SoapySDR.Device(devs[0])
 
-    dev = None
-    txs = lms.lms_stream_t()  # will populate later
-    buf = None
+# -------------------- Basic TX setup --------------------
+# Enable TX channel (Soapy enables on stream activate, but we set params first)
+sdr.setSampleRate(SOAPY_SDR_TX, CH, HOST_SR_HZ)
+# (Lime oversampling is chosen internally based on requested host SR; aiming for ~40 Msps NCO range)
 
-    try:
-        # 1) Open device
-        lst = (lms.lms_info_str_t * 8)()
-        n = lms.LMS_GetDeviceList(lst)
-        if n < 1:
-            print("No LimeSDR found", file=sys.stderr)
-            return 1
+sdr.setBandwidth(SOAPY_SDR_TX, CH, TX_LPF_BW_HZ)
+sdr.setGain(SOAPY_SDR_TX, CH, TX_GAIN_DB)
 
-        # pick the first device
-        devp = lms.lms_device_t_p()
-        if lms.LMS_Open(devp, lst[0], None) != 0:
-            print(f"LMS_Open failed: {_errstr()}", file=sys.stderr)
-            return 1
-        dev = devp.value
+# RF LO at 30 MHz
+sdr.setFrequency(SOAPY_SDR_TX, CH, "RF", LO_HZ)
 
-        # 2) Basic setup
-        CHECK(lms.LMS_Init(dev))
-        CHECK(lms.LMS_EnableChannel(dev, lms.LMS_CH_TX, CH, True))
-        print("TX channel enabled.")
+# NCO (BB) at -15 MHz for down-convert so RF = LO - NCO = 15 MHz
+bb = -NCO_FREQ_HZ if NCO_DOWNCONVERT else +NCO_FREQ_HZ
+sdr.setFrequency(SOAPY_SDR_TX, CH, "BB", bb)
 
-        # Sample rates: host 5 Msps, RF ≈ 40 Msps
-        CHECK(lms.LMS_SetSampleRate(dev, HOST_SR_HZ, OVERSAMPLE))
-        print_sr(dev)
+# Optional: printbacks (best-effort; not all drivers provide readback)
+try:
+    host_sr = sdr.getSampleRate(SOAPY_SDR_TX, CH)
+    print(f"Set/Get: SampleRate host={host_sr/1e6:.2f} Msps")
+except Exception:
+    pass
+try:
+    print(f"Set/Get: TX Gain = {sdr.getGain(SOAPY_SDR_TX, CH):.0f} dB")
+except Exception:
+    pass
+try:
+    print(f"Set/Get: LO = {sdr.getFrequency(SOAPY_SDR_TX, CH, 'RF')/1e6:.6f} MHz")
+except Exception:
+    pass
+# (Many drivers don’t expose an NCO index/readback; we skip it.)
 
-        # TX LPF/BW
-        CHECK(lms.LMS_SetLPFBW(dev, lms.LMS_CH_TX, CH, TX_LPF_BW_HZ))
+# -------------------- TX stream --------------------
+# Format 'CS16' = 16-bit IQ (matches LMS_FMT_I16)
+st_args = {"bufferLength": STREAM_BUFFER_LEN}  # driver-specific hint; safe to omit
+tx_stream = sdr.setupStream(SOAPY_SDR_TX, "CS16", [CH], st_args)
+sdr.activateStream(tx_stream)  # start
 
-        # Gain
-        CHECK(lms.LMS_SetGaindB(dev, lms.LMS_CH_TX, CH, TX_GAIN_DB))
-        print_gain(dev)
+print(f"TX stream started (bufferLength={STREAM_BUFFER_LEN}, fmt=CS16).")
 
-        # LO
-        CHECK(lms.LMS_SetLOFrequency(dev, lms.LMS_CH_TX, CH, float(LO_HZ)))
-        print_lo(dev)
+# Build a constant IQ buffer: I=0.7 FS, Q=0 -> pure tone at NCO after up/downconversion
+I = np.int16(TONE_SCALE * 32767)
+Q = np.int16(0)
+iq = np.empty(BUF_SAMPLES, dtype=np.complex64)  # build in float then view as int16 interleaved
+iq.real = I
+iq.imag = Q
+# Convert to interleaved int16 (Soapy expects raw bytes)
+iq_i16 = np.empty(2*BUF_SAMPLES, dtype=np.int16)
+iq_i16[0::2] = I
+iq_i16[1::2] = Q
 
-        # Optional calibration (commented out to match your C)
-        # CHECK(lms.LMS_Calibrate(dev, lms.LMS_CH_TX, CH, 20_000_000, 0))
+print(f"TX @ {(LO_HZ - (NCO_FREQ_HZ if NCO_DOWNCONVERT else -NCO_FREQ_HZ))/1e6:.1f} MHz "
+      f"(host={HOST_SR_HZ/1e6:.2f} Msps, gain={TX_GAIN_DB} dB). Ctrl+C to stop.")
 
-        # 3) NCO: program 15 MHz and select downconvert so RF = 30 - 15 = 15 MHz
-        # Prepare 16-entry frequency table
-        freqs = lms.doubleArray(16)
-        for i in range(16):
-            freqs[i] = 0.0
-        freqs[NCO_INDEX] = float(NCO_FREQ_HZ)
-        CHECK(lms.LMS_SetNCOFrequency(dev, True, CH, freqs, 0.0))  # dir_tx=True
-        CHECK(lms.LMS_SetNCOIndex(dev, True, CH, NCO_INDEX, NCO_DOWNCONVERT))
-        idx = lms.LMS_GetNCOIndex(dev, True, CH)
-        if idx < 0:
-            raise RuntimeError(_errstr())
-        print_nco(dev)
+# -------------------- Stream loop --------------------
+while keep_running:
+    # writeStream expects a pointer-like object; numpy gives a buffer interface
+    sr = sdr.writeStream(tx_stream, [iq_i16], BUF_SAMPLES, timeoutUs=SEND_TIMEOUT_US)
+    if sr.ret < 0:
+        print(f"writeStream error: {sr.ret}", file=sys.stderr)
+        break
 
-        # 4) TX stream
-        # zero-init the struct then set fields
-        txs.channel = CH
-        txs.isTx = True
-        txs.fifoSize = FIFO_SIZE_SAMPLES
-        txs.dataFmt = lms.LMS_FMT_I16  # C-safe 16-bit interleaved IQ
-        CHECK(lms.LMS_SetupStream(dev, txs))
-        CHECK(lms.LMS_StartStream(txs))
-        print(f"TX stream started (fifo={FIFO_SIZE_SAMPLES} samples, fmt=I16).")
+print("\nSIGINT detected: muting TX and shutting down safely...")
 
-        # Constant DC IQ -> pure RF tone after NCO
-        I = int(TONE_SCALE * 32767.0)
-        Q = 0
-        # interleaved IQ int16 buffer
-        buf = np.empty(2 * BUF_SAMPLES, dtype=np.int16)
-        buf[0::2] = I
-        buf[1::2] = Q
+# -------------------- Cleanup (graceful mute) --------------------
+try:
+    # push one zero buffer so last burst is silence
+    z = np.zeros(2*BUF_SAMPLES, dtype=np.int16)
+    _ = sdr.writeStream(tx_stream, [z], BUF_SAMPLES, timeoutUs=SEND_TIMEOUT_US)
+except Exception:
+    pass
 
-        host_sr = lms.doubleArray(1)
-        rf_sr = lms.doubleArray(1)
-        lms.LMS_GetSampleRate(dev, lms.LMS_CH_TX, CH, host_sr, rf_sr)  # best-effort
-
-        g_cur = lms.uint32Array(1)
-        lms.LMS_GetGaindB(dev, lms.LMS_CH_TX, CH, g_cur)
-
-        rf_mhz = (LO_HZ - NCO_FREQ_HZ) / 1e6
-        print(
-            f"TX @ {rf_mhz:.1f} MHz  "
-            f"(host={host_sr[0]/1e6:.2f} Msps, rf={rf_sr[0]/1e6:.2f} Msps, gain={int(g_cur[0])} dB). "
-            "Ctrl+C to stop."
-        )
-
-        # 5) Stream loop
-        meta = lms.lms_stream_meta_t()
-        meta.flushPartialPacket = False
-        meta.waitForTimestamp = False
-        meta.timestamp = 0
-
-        # Keep sending until SIGINT
-        # Note: LimeSuite expects number of complex samples, not I/Q integers count.
-        while keep_running:
-            sent = lms.LMS_SendStream(txs, buf, BUF_SAMPLES, meta, SEND_TIMEOUT_MS)
-            if sent < 0:
-                print(f"LMS_SendStream error: {_errstr()}", file=sys.stderr)
-                break
-
-        print("\nSIGINT detected: muting TX and shutting down safely...")
-
-    except KeyboardInterrupt:
-        print("\nSIGINT detected: muting TX and shutting down safely...")
-    except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-
-    finally:
-        # cleanup (graceful mute)
-        try:
-            if txs and getattr(txs, "handle", None):
-                z = np.zeros(2 * BUF_SAMPLES, dtype=np.int16)
-                meta = lms.lms_stream_meta_t()
-                meta.flushPartialPacket = False
-                meta.waitForTimestamp = False
-                meta.timestamp = 0
-                try:
-                    _ = lms.LMS_SendStream(txs, z, BUF_SAMPLES, meta, SEND_TIMEOUT_MS)
-                except Exception:
-                    pass
-
-                try:
-                    lms.LMS_StopStream(txs)
-                except Exception:
-                    pass
-                try:
-                    lms.LMS_DestroyStream(dev, txs)
-                except Exception:
-                    pass
-                print("TX stream stopped.")
-        except Exception:
-            pass
-
-        # Disable TX channel
-        try:
-            if dev:
-                lms.LMS_EnableChannel(dev, lms.LMS_CH_TX, CH, False)
-                print("TX channel disabled.")
-        except Exception:
-            pass
-
-        # Close device
-        try:
-            if dev:
-                lms.LMS_Close(dev)
-        except Exception:
-            pass
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+try:
+    sdr.deactivateStream(tx_stream)
+    sdr.closeStream(tx_stream)
+    print("TX stream stopped.")
+except Exception:
+    pass
