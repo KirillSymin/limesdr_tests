@@ -33,7 +33,7 @@ int main(void)
     txs.channel = 0;
     txs.isTx = true;
     txs.fifoSize = 1<<16;
-    txs.dataFmt = lms_stream_t::LMS_FMT_I16;
+    txs.dataFmt = LMS_FMT_I16;
     LMS_SetupStream(dev, &txs);
     LMS_StartStream(&txs);
 
