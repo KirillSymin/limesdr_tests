@@ -14,7 +14,7 @@
 #define NCO_FREQ_HZ       15000000   // 15 MHz NCO magnitude
 #define NCO_INDEX         0
 #define NCO_DOWNCONVERT   true       // RF = LO - NCO = 15 MHz
-#define TX_GAIN_DB        40         // moderate TX gain
+#define TX_GAIN_DB        70         // moderate TX gain
 #define FIFO_SIZE_SAMPLES (1<<17)    // bigger FIFO for stability
 #define BUF_SAMPLES       8192       // larger chunk reduces IRQ/USB churn
 #define SEND_TIMEOUT_MS   1000
@@ -61,8 +61,8 @@ int main(void)
     // LO
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
 
-    // // Calibrate near operating BW
-    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
+    // Calibrate near operating BW
+    CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
 
     // 3) NCO: program 15 MHz and select downconvert so RF = 30 - 15 = 15 MHz
     {
