@@ -9,10 +9,10 @@
 
 #define CH                0          // TX channel A
 #define HOST_SR_HZ        5000000    // 5 Msps over USB
-#define OVERSAMPLE        8          // RF ≈ HOST_SR * OVERSAMPLE = 40 Msps
+#define OVERSAMPLE        32          // RF ≈ HOST_SR * OVERSAMPLE = 40 Msps
 #define TX_LPF_BW_HZ      50000000   // 50 MHz LPF
-#define LO_HZ             30000000   // 30 MHz LO (PLL-friendly)
-#define TX_GAIN_DB        40         // moderate TX gain
+#define LO_HZ             50000000   // 30 MHz LO (PLL-friendly)
+#define TX_GAIN_DB        67         // moderate TX gain
 #define FIFO_SIZE_SAMPLES (1<<17)    // bigger FIFO for stability
 #define BUF_SAMPLES       8192       // larger chunk reduces IRQ/USB churn
 #define SEND_TIMEOUT_MS   1000
