@@ -28,6 +28,49 @@
 static volatile int keep_running = 1;
 static void on_sigint(int s){ (void)s; keep_running = 0; }
 
+static void print_sr(lms_device_t* dev){
+    double host=0, rf=0;
+    if (!LMS_GetSampleRate(dev, LMS_CH_TX, CH, &host, &rf))
+        printf("Set/Get: SampleRate host=%.2f Msps, rf=%.2f Msps\n", host/1e6, rf/1e6);
+}
+
+static void print_lpf(lms_device_t* dev){
+#ifdef LMS_GetLPFBW
+    float_type bw = 0;
+    if (!LMS_GetLPFBW(dev, LMS_CH_TX, CH, &bw))
+        printf("Set/Get: TX LPF BW = %.2f MHz\n", bw/1e6);
+#else
+    printf("Note: LMS_GetLPFBW not available in this LimeSuite; skipping BW readback.\n");
+#endif
+}
+
+static void print_gain(lms_device_t* dev){
+    unsigned int g = 0;
+    if (!LMS_GetGaindB(dev, LMS_CH_TX, CH, &g))
+        printf("Set/Get: TX Gain = %u dB\n", g);
+}
+
+static void print_lo(lms_device_t* dev){
+    double lof = 0;
+    if (!LMS_GetLOFrequency(dev, LMS_CH_TX, CH, &lof))
+        printf("Set/Get: LO = %.6f MHz\n", lof/1e6);
+}
+
+static void print_nco(lms_device_t* dev){
+#ifdef LMS_GetNCOFrequency
+    double freqs[16]={0};
+    double ph=0.0;
+    if (!LMS_GetNCOFrequency(dev, true, CH, freqs, &ph)) {
+        int idx = LMS_GetNCOIndex(dev, true, CH);
+        printf("Set/Get: NCO idx=%d, f=%.6f MHz, mode=%s\n",
+               idx, freqs[idx]/1e6, (LMS_GetNCOIndex(dev, true, CH)>=0 && NCO_DOWNCONVERT)?"downconv":"upconv");
+    }
+#else
+    int idx = LMS_GetNCOIndex(dev, true, CH);
+    printf("Set/Get: NCO idx=%d (no frequency readback in this LimeSuite)\n", idx);
+#endif
+}
+
 int main(void)
 {
     lms_device_t* dev = NULL;
@@ -45,21 +88,23 @@ int main(void)
     // 2) Basic setup
     CHECK(LMS_Init(dev));
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
+    printf("TX channel enabled.\n");
 
     // Sample rates: host 5 Msps, RF ≈ 40 Msps (for NCO range up to 20 MHz)
     CHECK(LMS_SetSampleRate(dev, HOST_SR_HZ, OVERSAMPLE));
-    double host_sr=0, rf_sr=0;
-    CHECK(LMS_GetSampleRate(dev, LMS_CH_TX, CH, &host_sr, &rf_sr));
+    print_sr(dev);
 
     // TX LPF/BW
     CHECK(LMS_SetLPFBW(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ));
+    print_lpf(dev);
 
     // Gain
     CHECK(LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_DB));
-    unsigned int g=0; CHECK(LMS_GetGaindB(dev, LMS_CH_TX, CH, &g));
+    print_gain(dev);
 
     // LO
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
+    print_lo(dev);
 
     // // Calibrate near operating BW
     // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
@@ -72,6 +117,7 @@ int main(void)
         CHECK(LMS_SetNCOIndex    (dev, true, CH, NCO_INDEX, NCO_DOWNCONVERT));
         int idx = LMS_GetNCOIndex(dev, true, CH);
         if (idx < 0) { fprintf(stderr,"LMS_GetNCOIndex failed: %s\n", LMS_GetLastErrorMessage()); goto cleanup; }
+        print_nco(dev);
     }
 
     // 4) TX stream
@@ -82,6 +128,7 @@ int main(void)
     txs.dataFmt  = LMS_FMT_I16; // C-safe
     CHECK(LMS_SetupStream(dev, &txs));
     CHECK(LMS_StartStream(&txs));
+    printf("TX stream started (fifo=%d samples, fmt=I16).\n", FIFO_SIZE_SAMPLES);
 
     // Constant DC IQ -> pure RF tone after NCO
     buf = (int16_t*)malloc(2*BUF_SAMPLES*sizeof(int16_t));
@@ -90,8 +137,12 @@ int main(void)
     const int16_t Q = 0;
     for (size_t i=0;i<BUF_SAMPLES;i++){ buf[2*i+0]=I; buf[2*i+1]=Q; }
 
+    double host_sr=0, rf_sr=0;
+    LMS_GetSampleRate(dev, LMS_CH_TX, CH, &host_sr, &rf_sr); // best-effort
+    unsigned int g_cur=0; LMS_GetGaindB(dev, LMS_CH_TX, CH, &g_cur);
+
     printf("TX @ %.1f MHz  (host=%.2f Msps, rf=%.2f Msps, gain=%u dB). Ctrl+C to stop.\n",
-           (LO_HZ - NCO_FREQ_HZ)/1e6, host_sr/1e6, rf_sr/1e6, g);
+           (LO_HZ - NCO_FREQ_HZ)/1e6, host_sr/1e6, rf_sr/1e6, g_cur);
 
     // 5) Stream loop
     while (keep_running) {
@@ -102,9 +153,29 @@ int main(void)
         }
     }
 
+    printf("\nSIGINT detected: muting TX and shutting down safely...\n");
+
 cleanup:
+    // Graceful mute: push one zero buffer so the last burst is silence
+    if (txs.handle) {
+        int16_t* z = (int16_t*)calloc(2*BUF_SAMPLES, sizeof(int16_t));
+        if (z){
+            lms_stream_meta_t meta; memset(&meta,0,sizeof(meta));
+            (void)LMS_SendStream(&txs, z, BUF_SAMPLES, &meta, SEND_TIMEOUT_MS);
+            free(z);
+        }
+        LMS_StopStream(&txs);
+        LMS_DestroyStream(dev, &txs);
+        printf("TX stream stopped.\n");
+    }
+
+    // Disable TX channel (safe TX off)
+    if (dev) {
+        LMS_EnableChannel(dev, LMS_CH_TX, CH, false);
+        printf("TX channel disabled.\n");
+    }
+
     if (buf) free(buf);
-    if (txs.handle) { LMS_StopStream(&txs); LMS_DestroyStream(dev, &txs); }
     if (dev) LMS_Close(dev);
     return 0;
 }
