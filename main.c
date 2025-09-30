@@ -9,7 +9,7 @@
 /* -------- tunable constants -------- */
 #define CFG_CH               0
 #define CFG_HOST_SR          5e6
-#define CFG_LPF_BW           30e6
+#define CFG_LPF_BW           50e6
 #define CFG_TX_ANT           0
 #define CFG_TX_GAIN_DB       40
 #define CFG_LO_FREQ          30e6
@@ -22,8 +22,6 @@
 #define CFG_TONE_Q           0
 #define CFG_BUF_SAMPLES      4096
 #define CFG_SEND_TIMEOUT_MS  1000
-#define CFG_HOST_SR 5e6
-#define CFG_LPF_BW  50e6
 
 /* pick the right enum name depending on compiler */
 #ifdef __cplusplus
