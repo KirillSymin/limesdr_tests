@@ -1,3 +1,8 @@
+// build:  gcc -O2 -Wall -Wextra -o lime_tx_nco lime_tx_nco.c -lLimeSuite
+// example:
+//   ./lime_tx_nco --host-sr 5M --oversample 32 --tx-lpf-bw 20M \
+//                 --lo 30M --nco 15M --nco-downconvert true --tx-gain 40
+
 #include "lime/LimeSuite.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -5,20 +10,14 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <ctype.h>
 
-#define CH                0          // TX channel A
-#define HOST_SR_HZ        5000000    // 5 Msps over USB
-#define OVERSAMPLE        32          // RF ≈ HOST_SR * OVERSAMPLE = 40 Msps
-#define TX_LPF_BW_HZ      20000000   // 50 MHz LPF
-#define LO_HZ             30000000   // 30 MHz LO (PLL-friendly)
-#define NCO_FREQ_HZ       15000000   // 15 MHz NCO magnitude
+#define CH                0           // TX channel A
 #define NCO_INDEX         0
-#define NCO_DOWNCONVERT   true       // RF = LO - NCO = 15 MHz
-#define TX_GAIN_DB        40         // moderate TX gain
-#define FIFO_SIZE_SAMPLES (1<<17)    // bigger FIFO for stability
-#define BUF_SAMPLES       8192       // larger chunk reduces IRQ/USB churn
+#define FIFO_SIZE_SAMPLES (1<<17)     // bigger FIFO for stability
+#define BUF_SAMPLES       8192        // larger chunk reduces IRQ/USB churn
 #define SEND_TIMEOUT_MS   1000
-#define TONE_SCALE        0.70       // 70% FS to avoid DAC clipping
+#define TONE_SCALE        0.70        // 70% FS to avoid DAC clipping
 
 #define CHECK(x) do { \
   int __e = (x); \
@@ -51,8 +50,84 @@ static void print_nco(lms_device_t* dev){
     printf("Set/Get: NCO idx=%d (no frequency readback in this LimeSuite)\n", idx);
 }
 
-int main(void)
+static void usage(const char* prog){
+    fprintf(stderr,
+        "Usage: %s [options]\n"
+        "  --host-sr <Hz>          Host sample rate (e.g., 5e6, 5M) [default 5M]\n"
+        "  --oversample <N>        Oversample factor (int)          [default 32]\n"
+        "  --tx-lpf-bw <Hz>        TX LPF bandwidth                 [default 20M]\n"
+        "  --lo <Hz>               LO frequency                     [default 30M]\n"
+        "  --nco <Hz>              NCO frequency (magnitude)        [default 15M]\n"
+        "  --nco-downconvert <0|1|true|false>\n"
+        "                          If true: RF = LO - NCO           [default true]\n"
+        "  --tx-gain <dB>          TX gain in dB                    [default 40]\n"
+        "  -h, --help              Show this help\n\n", prog);
+}
+
+static bool parse_bool(const char* s, bool* out){
+    if (!s || !out) return false;
+    if (!strcasecmp(s,"1") || !strcasecmp(s,"true") || !strcasecmp(s,"yes") || !strcasecmp(s,"on")) { *out=true;  return true; }
+    if (!strcasecmp(s,"0") || !strcasecmp(s,"false")|| !strcasecmp(s,"no")  || !strcasecmp(s,"off")){ *out=false; return true; }
+    return false;
+}
+
+// Parse Hz with optional k/M/G suffix (case-insensitive). Returns true on success.
+static bool parse_hz(const char* s, double* out){
+    if (!s || !out) return false;
+    char* end = NULL;
+    double v = strtod(s, &end);
+    if (end && *end != '\0'){
+        // allow one trailing suffix char, ignoring whitespace
+        while (*end && isspace((unsigned char)*end)) end++;
+        if (*end){
+            double mul = 1.0;
+            char c = (char)tolower((unsigned char)*end);
+            if (c=='k') mul = 1e3;
+            else if (c=='m') mul = 1e6;
+            else if (c=='g') mul = 1e9;
+            else return false;
+            end++;
+            while (*end && isspace((unsigned char)*end)) end++;
+            if (*end!='\0') return false;
+            v *= mul;
+        }
+    }
+    *out = v;
+    return true;
+}
+
+int main(int argc, char** argv)
 {
+    // Defaults (mirroring the original #defines)
+    double HOST_SR_HZ      = 5e6;
+    int    OVERSAMPLE      = 32;
+    double TX_LPF_BW_HZ    = 20e6;
+    double LO_HZ           = 30e6;
+    double NCO_FREQ_HZ     = 15e6;
+    bool   NCO_DOWNCONVERT = true;
+    int    TX_GAIN_DB      = 40;
+
+    // Simple arg parsing (supports long options listed in usage())
+    for (int i=1; i<argc; i++){
+        const char* a = argv[i];
+        if (!strcmp(a,"-h") || !strcmp(a,"--help")) { usage(argv[0]); return 0; }
+
+        // Each option requires a value
+        #define NEEDVAL() do{ if (i+1>=argc){ fprintf(stderr,"Missing value for %s\n", a); usage(argv[0]); return 1; } }while(0)
+
+        if (!strcmp(a,"--host-sr")){ NEEDVAL(); if(!parse_hz(argv[++i], &HOST_SR_HZ)) { fprintf(stderr,"Bad --host-sr\n"); return 1; } continue; }
+        if (!strcmp(a,"--oversample")){ NEEDVAL(); OVERSAMPLE = (int)strtol(argv[++i], NULL, 0); if (OVERSAMPLE<1){ fprintf(stderr,"Bad --oversample\n"); return 1; } continue; }
+        if (!strcmp(a,"--tx-lpf-bw")){ NEEDVAL(); if(!parse_hz(argv[++i], &TX_LPF_BW_HZ)) { fprintf(stderr,"Bad --tx-lpf-bw\n"); return 1; } continue; }
+        if (!strcmp(a,"--lo")){ NEEDVAL(); if(!parse_hz(argv[++i], &LO_HZ)) { fprintf(stderr,"Bad --lo\n"); return 1; } continue; }
+        if (!strcmp(a,"--nco")){ NEEDVAL(); if(!parse_hz(argv[++i], &NCO_FREQ_HZ)) { fprintf(stderr,"Bad --nco\n"); return 1; } continue; }
+        if (!strcmp(a,"--nco-downconvert")){ NEEDVAL(); if(!parse_bool(argv[++i], &NCO_DOWNCONVERT)) { fprintf(stderr,"Bad --nco-downconvert\n"); return 1; } continue; }
+        if (!strcmp(a,"--tx-gain")){ NEEDVAL(); TX_GAIN_DB = (int)strtol(argv[++i], NULL, 0); if (TX_GAIN_DB<0 || TX_GAIN_DB>73){ /* Lime typical range */ fprintf(stderr,"Suspicious --tx-gain (0..73 dB typical)\n"); } continue; }
+
+        fprintf(stderr,"Unknown option: %s\n", a);
+        usage(argv[0]);
+        return 1;
+    }
+
     lms_device_t* dev = NULL;
     lms_stream_t  txs;
     int16_t*      buf = NULL;
@@ -70,7 +145,7 @@ int main(void)
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled.\n");
 
-    // Sample rates: host 5 Msps, RF ≈ 40 Msps (for NCO range up to 20 MHz)
+    // Sample rates
     CHECK(LMS_SetSampleRate(dev, HOST_SR_HZ, OVERSAMPLE));
     print_sr(dev);
 
@@ -85,13 +160,13 @@ int main(void)
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
     print_lo(dev);
 
-    // // Calibrate near operating BW
-    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, 20000000, 0)); // 20 MHz calib BW
+    // // Optional: Calibrate near operating BW
+    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ, 0));
 
-    // 3) NCO: program 15 MHz and select downconvert so RF = 30 - 15 = 15 MHz
+    // 3) NCO
     {
         double freqs[16]={0};
-        freqs[NCO_INDEX] = (double)NCO_FREQ_HZ; // positive; direction set below
+        freqs[NCO_INDEX] = NCO_FREQ_HZ; // magnitude; direction set below
         CHECK(LMS_SetNCOFrequency(dev, true, CH, freqs, 0.0));              // dir_tx=true
         CHECK(LMS_SetNCOIndex    (dev, true, CH, NCO_INDEX, NCO_DOWNCONVERT));
         int idx = LMS_GetNCOIndex(dev, true, CH);
@@ -120,8 +195,10 @@ int main(void)
     LMS_GetSampleRate(dev, LMS_CH_TX, CH, &host_sr, &rf_sr); // best-effort
     unsigned int g_cur=0; LMS_GetGaindB(dev, LMS_CH_TX, CH, &g_cur);
 
-    printf("TX @ %.1f MHz  (host=%.2f Msps, rf=%.2f Msps, gain=%u dB). Ctrl+C to stop.\n",
-           (LO_HZ - NCO_FREQ_HZ)/1e6, host_sr/1e6, rf_sr/1e6, g_cur);
+    const double rf_hz = NCO_DOWNCONVERT ? (LO_HZ - NCO_FREQ_HZ) : (LO_HZ + NCO_FREQ_HZ);
+    printf("TX @ %.6f MHz  (host=%.2f Msps, rf=%.2f Msps, gain=%u dB, %sconvert).\n",
+           rf_hz/1e6, host_sr/1e6, rf_sr/1e6, g_cur, NCO_DOWNCONVERT?"down":"up");
+    printf("Ctrl+C to stop.\n");
 
     // 5) Stream loop
     while (keep_running) {
