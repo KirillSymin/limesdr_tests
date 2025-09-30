@@ -12,7 +12,7 @@
 #define CFG_LPF_BW           50e6
 #define CFG_TX_ANT           0
 #define CFG_TX_GAIN_DB       40
-#define CFG_LO_FREQ          30e6
+#define CFG_LO_FREQ          50e6
 #define CFG_CAL_BW           20e6
 #define CFG_NCO_FREQ_HZ      15e6        /* magnitude; sign set via downconvert flag */
 #define CFG_NCO_INDEX        0
