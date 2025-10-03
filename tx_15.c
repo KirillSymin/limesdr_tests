@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <ctype.h>
 #include <time.h>
+#include <math.h>
 
 #define CH                0           // TX channel A
 #define NCO_INDEX         0
