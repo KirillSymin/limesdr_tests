@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <ctype.h>
+#include <time.h>
 
 #define CH                0           // TX channel A
 #define NCO_INDEX         0
@@ -13,6 +14,8 @@
 #define BUF_SAMPLES       8192        // larger chunk reduces IRQ/USB churn
 #define SEND_TIMEOUT_MS   1000
 #define TONE_SCALE        0.70        // 70% FS to avoid DAC clipping
+#define TX_GAIN_MIN_DB    0
+#define TX_GAIN_MAX_DB    73          // Lime typical range
 
 #define CHECK(x) do { \
   int __e = (x); \
@@ -48,14 +51,21 @@ static void print_nco(lms_device_t* dev){
 static void usage(const char* prog){
     fprintf(stderr,
         "Usage: %s [options]\n"
+        "RF & DSP:\n"
         "  --host-sr <Hz>          Host sample rate (e.g., 5e6, 5M) [default 5M]\n"
         "  --oversample <N>        Oversample factor (int)          [default 32]\n"
         "  --tx-lpf-bw <Hz>        TX LPF bandwidth                 [default 20M]\n"
         "  --lo <Hz>               LO frequency                     [default 30M]\n"
         "  --nco <Hz>              NCO frequency (magnitude)        [default 15M]\n"
-        "  --nco-downconvert <0|1|true|false>\n"
-        "                          If true: RF = LO - NCO           [default true]\n"
-        "  --tx-gain <dB>          TX gain in dB                    [default 40]\n"
+        "  --nco-downconvert <0|1|true|false>  RF=LO-NCO if true    [default true]\n"
+        "\n"
+        "Gain (smooth ramp):\n"
+        "  --tx-gain-start <dB>    Starting TX gain                 [default 0]\n"
+        "  --tx-gain <dB>          Target TX gain                   [default 40]\n"
+        "  --gain-ramp-ms <ms>     Total ramp duration              [default 2000]\n"
+        "  --gain-ramp-interval-ms <ms>  Step interval              [default 20]\n"
+        "\n"
+        "Misc:\n"
         "  -h, --help              Show this help\n\n", prog);
 }
 
@@ -72,7 +82,6 @@ static bool parse_hz(const char* s, double* out){
     char* end = NULL;
     double v = strtod(s, &end);
     if (end && *end != '\0'){
-        // allow one trailing suffix char, ignoring whitespace
         while (*end && isspace((unsigned char)*end)) end++;
         if (*end){
             double mul = 1.0;
@@ -91,23 +100,32 @@ static bool parse_hz(const char* s, double* out){
     return true;
 }
 
+static int clampi(int v, int lo, int hi){ if (v<lo) return lo; if (v>hi) return hi; return v; }
+
+static uint64_t now_ms(void){
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec*1000ull + (uint64_t)(ts.tv_nsec/1000000ull);
+}
+
 int main(int argc, char** argv)
 {
-    // Defaults (mirroring the original #defines)
+    // Defaults
     double HOST_SR_HZ      = 5e6;
     int    OVERSAMPLE      = 32;
     double TX_LPF_BW_HZ    = 20e6;
     double LO_HZ           = 30e6;
     double NCO_FREQ_HZ     = 15e6;
     bool   NCO_DOWNCONVERT = true;
-    int    TX_GAIN_DB      = 40;
+    int    TX_GAIN_DB      = 40;   // target
+    int    TX_GAIN_START   = 0;    // start
+    int    RAMP_MS         = 2000; // total time
+    int    RAMP_INTERVAL_MS= 20;   // step interval
 
-    // Simple arg parsing (supports long options listed in usage())
+    // Arg parsing
     for (int i=1; i<argc; i++){
         const char* a = argv[i];
         if (!strcmp(a,"-h") || !strcmp(a,"--help")) { usage(argv[0]); return 0; }
 
-        // Each option requires a value
         #define NEEDVAL() do{ if (i+1>=argc){ fprintf(stderr,"Missing value for %s\n", a); usage(argv[0]); return 1; } }while(0)
 
         if (!strcmp(a,"--host-sr")){ NEEDVAL(); if(!parse_hz(argv[++i], &HOST_SR_HZ)) { fprintf(stderr,"Bad --host-sr\n"); return 1; } continue; }
@@ -116,12 +134,22 @@ int main(int argc, char** argv)
         if (!strcmp(a,"--lo")){ NEEDVAL(); if(!parse_hz(argv[++i], &LO_HZ)) { fprintf(stderr,"Bad --lo\n"); return 1; } continue; }
         if (!strcmp(a,"--nco")){ NEEDVAL(); if(!parse_hz(argv[++i], &NCO_FREQ_HZ)) { fprintf(stderr,"Bad --nco\n"); return 1; } continue; }
         if (!strcmp(a,"--nco-downconvert")){ NEEDVAL(); if(!parse_bool(argv[++i], &NCO_DOWNCONVERT)) { fprintf(stderr,"Bad --nco-downconvert\n"); return 1; } continue; }
-        if (!strcmp(a,"--tx-gain")){ NEEDVAL(); TX_GAIN_DB = (int)strtol(argv[++i], NULL, 0); if (TX_GAIN_DB<0 || TX_GAIN_DB>73){ /* Lime typical range */ fprintf(stderr,"Suspicious --tx-gain (0..73 dB typical)\n"); } continue; }
+
+        if (!strcmp(a,"--tx-gain")){ NEEDVAL(); TX_GAIN_DB = (int)strtol(argv[++i], NULL, 0); continue; }
+        if (!strcmp(a,"--tx-gain-start")){ NEEDVAL(); TX_GAIN_START = (int)strtol(argv[++i], NULL, 0); continue; }
+        if (!strcmp(a,"--gain-ramp-ms")){ NEEDVAL(); RAMP_MS = (int)strtol(argv[++i], NULL, 0); continue; }
+        if (!strcmp(a,"--gain-ramp-interval-ms")){ NEEDVAL(); RAMP_INTERVAL_MS = (int)strtol(argv[++i], NULL, 0); continue; }
 
         fprintf(stderr,"Unknown option: %s\n", a);
         usage(argv[0]);
         return 1;
     }
+
+    // Clamp gains
+    TX_GAIN_DB    = clampi(TX_GAIN_DB,    TX_GAIN_MIN_DB, TX_GAIN_MAX_DB);
+    TX_GAIN_START = clampi(TX_GAIN_START, TX_GAIN_MIN_DB, TX_GAIN_MAX_DB);
+    if (RAMP_INTERVAL_MS < 1) RAMP_INTERVAL_MS = 1;
+    if (RAMP_MS < 0) RAMP_MS = 0;
 
     lms_device_t* dev = NULL;
     lms_stream_t  txs;
@@ -147,8 +175,8 @@ int main(int argc, char** argv)
     // TX LPF/BW
     CHECK(LMS_SetLPFBW(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ));
 
-    // Gain
-    CHECK(LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_DB));
+    // Set initial gain (start of ramp)
+    CHECK(LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_START));
     print_gain(dev);
 
     // LO
@@ -188,19 +216,64 @@ int main(int argc, char** argv)
 
     double host_sr=0, rf_sr=0;
     LMS_GetSampleRate(dev, LMS_CH_TX, CH, &host_sr, &rf_sr); // best-effort
-    unsigned int g_cur=0; LMS_GetGaindB(dev, LMS_CH_TX, CH, &g_cur);
 
     const double rf_hz = NCO_DOWNCONVERT ? (LO_HZ - NCO_FREQ_HZ) : (LO_HZ + NCO_FREQ_HZ);
-    printf("TX @ %.6f MHz  (host=%.2f Msps, rf=%.2f Msps, gain=%u dB, %sconvert).\n",
-           rf_hz/1e6, host_sr/1e6, rf_sr/1e6, g_cur, NCO_DOWNCONVERT?"down":"up");
+    printf("TX @ %.6f MHz  (host=%.2f Msps, rf=%.2f Msps, start_gain=%d dB -> target=%d dB, ramp=%d ms, step=%d ms, %sconvert).\n",
+           rf_hz/1e6, host_sr/1e6, rf_sr/1e6, TX_GAIN_START, TX_GAIN_DB, RAMP_MS, RAMP_INTERVAL_MS,
+           NCO_DOWNCONVERT?"down":"up");
     printf("Ctrl+C to stop.\n");
 
-    // 5) Stream loop
+    // 5) Stream loop + gain ramp
+    const bool use_ramp = (RAMP_MS > 0) && (TX_GAIN_DB != TX_GAIN_START);
+    const int  total_delta = TX_GAIN_DB - TX_GAIN_START; // may be negative if ever allowed
+    const int  steps = use_ramp ? (RAMP_MS + RAMP_INTERVAL_MS - 1) / RAMP_INTERVAL_MS : 1;
+    const double step_db_f = use_ramp ? ((double)total_delta / (double)steps) : 0.0;
+
+    uint64_t t0 = now_ms();
+    uint64_t t_next = t0 + (use_ramp ? (uint64_t)RAMP_INTERVAL_MS : UINT64_MAX);
+    double   g_accum = (double)TX_GAIN_START; // track fractional dB
+    int      g_last_applied = TX_GAIN_START;
+
     while (keep_running) {
         lms_stream_meta_t meta; memset(&meta,0,sizeof(meta));
         if (LMS_SendStream(&txs, buf, BUF_SAMPLES, &meta, SEND_TIMEOUT_MS) < 0) {
             fprintf(stderr,"LMS_SendStream error: %s\n", LMS_GetLastErrorMessage());
             break;
+        }
+
+        // ramp handler
+        if (use_ramp) {
+            uint64_t now = now_ms();
+            while (now >= t_next && keep_running) {
+                g_accum += step_db_f;
+                int g_int = clampi((int)llround(g_accum), TX_GAIN_MIN_DB, TX_GAIN_MAX_DB);
+
+                // Avoid redundant I2C/SPI if unchanged
+                if (g_int != g_last_applied) {
+                    if (LMS_SetGaindB(dev, LMS_CH_TX, CH, g_int) == 0) {
+                        g_last_applied = g_int;
+                        // Optional: uncomment to see the ramp progress
+                        // printf("Gain -> %d dB\n", g_int);
+                    } else {
+                        fprintf(stderr,"Gain ramp set failed: %s\n", LMS_GetLastErrorMessage());
+                    }
+                }
+
+                t_next += (uint64_t)RAMP_INTERVAL_MS;
+
+                // Done?
+                if ((step_db_f >= 0 && g_last_applied >= TX_GAIN_DB) ||
+                    (step_db_f <  0 && g_last_applied <= TX_GAIN_DB)) {
+                    // Snap exactly to target once and stop ramping
+                    if (g_last_applied != TX_GAIN_DB) {
+                        (void)LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_DB);
+                        g_last_applied = TX_GAIN_DB;
+                    }
+                    t_next = UINT64_MAX; // no more ramp ticks
+                    break;
+                }
+                now = now_ms();
+            }
         }
     }
 
