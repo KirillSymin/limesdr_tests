@@ -161,8 +161,8 @@ int main(int argc, char** argv)
         print_nco(dev);
     }
 
-    CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
-    printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
+    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
+    // printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
 
     memset(&txs, 0, sizeof(txs));
     txs.channel = CH;
