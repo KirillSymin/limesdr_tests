@@ -184,8 +184,8 @@ int main(int argc, char** argv)
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
     print_lo(dev);
 
-    // // Optional: Calibrate near operating BW
-    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ, 0));
+    // Optional: Calibrate near operating BW
+    CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ, 0));
 
     // 3) NCO
     {
