@@ -303,10 +303,31 @@ int main(int argc, char** argv)
     // 2) Basic setup
     CHECK(LMS_Init(dev));
 
+    // ---- Parameter snapshot(s) before/after calibration as requested ----
+    print_snapshot(dev, DO_CAL ? "BEFORE calibration" : "Parameters (calibration OFF)",
+                   TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
+
+    int calib_rc = 0;
     if (DO_CAL) {
         CHECK(LMS_Reset(dev));
         printf("device reset to defaults\n");
+        printf("Running LMS_Calibrate(TX ch=%d, bw=%.3f MHz)...\n", CH, TX_LPF_BW_HZ/1e6);
+        calib_rc = LMS_Calibrate(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ, 0);
+        if (calib_rc) fprintf(stderr,"LMS_Calibrate returned %d: %s\n", calib_rc, LMS_GetLastErrorMessage());
+        else          printf("Calibration OK.\n");
+
+        // Print AFTER calibration snapshot
+        print_snapshot(dev, "AFTER calibration",
+                       TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
     }
+
+    // If manual correctors are requested, apply them now (after calibration so they override)
+    if (SET_GI || SET_GQ || SET_PHASE) {
+        CHECK(apply_manual_txtsp(dev, CH, SET_GI, MAN_GI, SET_GQ, MAN_GQ, SET_PHASE, MAN_PHASE));
+        print_snapshot(dev, DO_CAL ? "AFTER manual correctors (override calibration)" : "AFTER manual correctors",
+                       TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
+    }
+    // --------------------------------------------------------------------
 
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled.\n");
@@ -334,30 +355,6 @@ int main(int argc, char** argv)
         CHECK(LMS_SetNCOIndex    (dev, true, CH, NCO_INDEX, NCO_DOWNCONVERT));
         print_nco(dev);
     }
-
-    // ---- Parameter snapshot(s) before/after calibration as requested ----
-    print_snapshot(dev, DO_CAL ? "BEFORE calibration" : "Parameters (calibration OFF)",
-                   TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
-
-    int calib_rc = 0;
-    if (DO_CAL) {
-        printf("Running LMS_Calibrate(TX ch=%d, bw=%.3f MHz)...\n", CH, TX_LPF_BW_HZ/1e6);
-        calib_rc = LMS_Calibrate(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ, 0);
-        if (calib_rc) fprintf(stderr,"LMS_Calibrate returned %d: %s\n", calib_rc, LMS_GetLastErrorMessage());
-        else          printf("Calibration OK.\n");
-
-        // Print AFTER calibration snapshot
-        print_snapshot(dev, "AFTER calibration",
-                       TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
-    }
-
-    // If manual correctors are requested, apply them now (after calibration so they override)
-    if (SET_GI || SET_GQ || SET_PHASE) {
-        CHECK(apply_manual_txtsp(dev, CH, SET_GI, MAN_GI, SET_GQ, MAN_GQ, SET_PHASE, MAN_PHASE));
-        print_snapshot(dev, DO_CAL ? "AFTER manual correctors (override calibration)" : "AFTER manual correctors",
-                       TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
-    }
-    // --------------------------------------------------------------------
 
     // 4) TX stream
     memset(&txs, 0, sizeof(txs));
@@ -394,7 +391,9 @@ int main(int argc, char** argv)
     uint64_t t_next = t0 + (use_ramp ? (uint64_t)RAMP_INTERVAL_MS : UINT64_MAX);
     double   g_accum = (double)TX_GAIN_START; // track fractional dB
     int      g_last_applied = TX_GAIN_START;
-
+    
+    print_snapshot(dev, "NEAR START SIGNAL calibration",
+                       TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
     while (keep_running) {
         lms_stream_meta_t meta; memset(&meta,0,sizeof(meta));
         if (LMS_SendStream(&txs, buf, BUF_SAMPLES, &meta, SEND_TIMEOUT_MS) < 0) {
