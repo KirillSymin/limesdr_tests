@@ -246,8 +246,8 @@ int main(int argc, char **argv) {
 
     CHECK(LMS_Init(dev));
 
-    CHECK(LMS_Reset(dev));
-    printf("device reset to defaults\n");
+    // CHECK(LMS_Reset(dev));
+    // printf("device reset to defaults\n");
 
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled\n");
@@ -271,8 +271,8 @@ int main(int argc, char **argv) {
         print_nco(dev);
     }
 
-    CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
-    printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
+    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
+    // printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
 
     txs.channel = CH;
     txs.isTx = true;
