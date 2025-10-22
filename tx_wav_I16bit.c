@@ -221,11 +221,9 @@ static void print_tx_correctors(lms_device_t *dev, int ch) {
     int dci = (int8_t)((reg_dc >> 8) & 0xFF);
     int dcq = (int8_t)(reg_dc & 0xFF);
 
-    printf("GCORRI=%d\n", gi);
-    printf("GCORRQ=%d\n", gq);
-    printf("IQCORR=%d\n", iq);
-    printf("DCCORRI=%d\n", dci);
-    printf("DCCORRQ=%d\n", dcq);
+    printf("gain: GCORRI=%d, GCORRQ=%d\n", gi, gq);
+    printf("phase: IQCORR=%d\n", iq);
+    printf("dc: DCCORRI=%d, DCCORRQ=%d\n", dci, dcq);
 }
 
 static int apply_manual_txtsp(lms_device_t *dev, int ch, bool have_gi, int gi, bool have_gq, int gq, bool have_phase,
