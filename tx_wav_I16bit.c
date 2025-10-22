@@ -2,11 +2,14 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define CH 0
 #define NCO_INDEX 0
@@ -78,6 +81,14 @@ static bool parse_hz(const char* s, double* out){
     return true;
 }
 // clang-format on
+
+static int clampi(int v, int lo, int hi) {
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
+    return v;
+}
 
 #pragma pack(push, 1)
 typedef struct {
@@ -179,6 +190,88 @@ static bool parse_wav(const char *path, wav_info_t *wi, FILE **outf) {
     return true;
 }
 
+static int set_mac_channel(lms_device_t *dev, int ch) {
+    uint16_t v = 0;
+    if (LMS_ReadLMSReg(dev, 0x0020, &v))
+        return -1;
+    v = (uint16_t)((v & ~0x3) | (ch == 0 ? 0x1 : 0x2));
+    return LMS_WriteLMSReg(dev, 0x0020, v);
+}
+
+static void print_tx_correctors(lms_device_t *dev, int ch) {
+    if (set_mac_channel(dev, ch)) {
+        fprintf(stderr, "WARN: can't set MAC for channel %c\n", ch ? 'B' : 'A');
+        return;
+    }
+
+    uint16_t reg_gq = 0, reg_gi = 0, reg_iq = 0, reg_dc = 0;
+
+    (void)LMS_ReadLMSReg(dev, 0x0201, &reg_gq); // GCORRQ[10:0]
+    (void)LMS_ReadLMSReg(dev, 0x0202, &reg_gi); // GCORRI[10:0]
+    (void)LMS_ReadLMSReg(dev, 0x0203, &reg_iq); // IQCORR[11:0] (signed)
+    (void)LMS_ReadLMSReg(dev, 0x0204, &reg_dc); // DCCORRI[15:8], DCCORRQ[7:0]
+
+    int gq = (int)(reg_gq & 0x07FF);
+    int gi = (int)(reg_gi & 0x07FF);
+
+    int iq = (int)(reg_iq & 0x0FFF);
+    if (iq & 0x0800)
+        iq |= ~0x0FFF;
+
+    int dci = (int8_t)((reg_dc >> 8) & 0xFF);
+    int dcq = (int8_t)(reg_dc & 0xFF);
+
+    printf("GCORRI=%d\n", gi);
+    printf("GCORRQ=%d\n", gq);
+    printf("IQCORR=%d\n", iq);
+    printf("DCCORRI=%d\n", dci);
+    printf("DCCORRQ=%d\n", dcq);
+}
+
+static int apply_manual_txtsp(lms_device_t *dev, int ch, bool have_gi, int gi, bool have_gq, int gq, bool have_phase,
+                              int phase, bool have_dci, int dci, bool have_dcq, int dcq) {
+    if (set_mac_channel(dev, ch))
+        return -1;
+
+    int rc = 0;
+
+    if (have_gi) {
+        gi = clampi(gi, 0, 2047);
+        rc |= LMS_WriteLMSReg(dev, 0x0202, (uint16_t)((uint16_t)gi & 0x07FF)); // GCORRI
+    }
+    if (have_gq) {
+        gq = clampi(gq, 0, 2047);
+        rc |= LMS_WriteLMSReg(dev, 0x0201, (uint16_t)((uint16_t)gq & 0x07FF)); // GCORRQ
+    }
+    if (have_phase) {
+        phase = clampi(phase, -2047, 2047);
+        uint16_t iq12 = (uint16_t)((uint16_t)phase & 0x0FFF); // IQCORR (12 bit signed)
+        rc |= LMS_WriteLMSReg(dev, 0x0203, iq12);
+    }
+
+    if (have_dci || have_dcq) {
+        uint16_t reg_dc = 0;
+        rc |= LMS_ReadLMSReg(dev, 0x0204, &reg_dc); // DCCORR
+        if (have_dci) {
+            int8_t dci_s = (int8_t)clampi(dci, -128, 127);
+            reg_dc = (uint16_t)((reg_dc & 0x00FFu) | ((uint16_t)(uint8_t)dci_s << 8)); // I in [15:8]
+        }
+        if (have_dcq) {
+            int8_t dcq_s = (int8_t)clampi(dcq, -128, 127);
+            reg_dc = (uint16_t)((reg_dc & 0xFF00u) | (uint16_t)(uint8_t)dcq_s); // Q in [7:0]
+        }
+        rc |= LMS_WriteLMSReg(dev, 0x0204, reg_dc);
+    }
+
+    // Clear PH, GC, DC bypass so manual values take effect
+    uint16_t byp = 0;
+    rc |= LMS_ReadLMSReg(dev, 0x0208, &byp);
+    byp &= (uint16_t)~((1u << 0) | (1u << 1) | (1u << 3)); // clear PH_BYP (bit0), GC_BYP (bit1), DC_BYP (bit3)
+    rc |= LMS_WriteLMSReg(dev, 0x0208, byp);
+
+    return rc;
+}
+
 int main(int argc, char **argv) {
     int OVERSAMPLE = 32;
     double TX_LPF_BW_HZ = 20e6;
@@ -191,6 +284,13 @@ int main(int argc, char **argv) {
     const char *WAV_PATH = NULL;
     bool LOOP = false;
     double SCALE = 1.0;
+
+    bool DO_RESET = false;
+    bool DO_CALIBRATE = false;
+
+    bool PRINT_CORRECTORS = false;
+    bool SET_GI = false, SET_GQ = false, SET_PHASE = false, SET_DCI = false, SET_DCQ = false;
+    int MAN_GI = 0, MAN_GQ = 0, MAN_PHASE = 0, MAN_DCI = 0, MAN_DCQ = 0;
 
     // clang-format off
     for (int i=1; i<argc; i++){
@@ -207,6 +307,14 @@ int main(int argc, char **argv) {
         if (!strcmp(a,"--cal-bw")){ NEEDVAL(); if(!parse_hz(argv[++i], &CAL_BW_HZ)) { fprintf(stderr,"bad --cal-bw\n"); return 1; } continue; }
         if (!strcmp(a,"--loop")){ LOOP = true; continue; }
         if (!strcmp(a,"--scale")){ NEEDVAL(); SCALE = strtod(argv[++i], NULL); if (SCALE<0.0 || SCALE>4.0){ fprintf(stderr,"--scale out of range\n"); return 1; } continue; }
+        if (!strcmp(a,"--reset")){ DO_RESET = true; if (i+1 < argc){ bool v=false; if (parse_bool(argv[i+1], &v)){ DO_RESET = v; i++; } } continue; }
+        if (!strcmp(a,"--calibrate")){ DO_CALIBRATE = true; if (i+1 < argc){ bool v=false; if (parse_bool(argv[i+1], &v)){ DO_CALIBRATE = v; i++; } } continue; }
+        if (!strcmp(a,"--print-correctors")){ PRINT_CORRECTORS = true; if (i+1 < argc){ bool v=false; if (parse_bool(argv[i+1], &v)){ PRINT_CORRECTORS = v; i++; } } continue; }
+        if (!strcmp(a,"--set-gain-i")){ NEEDVAL(); SET_GI=true; MAN_GI=clampi((int)strtol(argv[++i], NULL, 0), 0, 2047); continue; }
+        if (!strcmp(a,"--set-gain-q")){ NEEDVAL(); SET_GQ=true; MAN_GQ=clampi((int)strtol(argv[++i], NULL, 0), 0, 2047); continue; }
+        if (!strcmp(a,"--set-phase")) { NEEDVAL(); SET_PHASE=true; MAN_PHASE=clampi((int)strtol(argv[++i], NULL, 0), -2047, 2047); continue; }
+        if (!strcmp(a,"--set-dc-i"))  { NEEDVAL(); SET_DCI=true; MAN_DCI=clampi((int)strtol(argv[++i], NULL, 0), -128, 127); continue; }
+        if (!strcmp(a,"--set-dc-q"))  { NEEDVAL(); SET_DCQ=true; MAN_DCQ=clampi((int)strtol(argv[++i], NULL, 0), -128, 127); continue; }
 
         fprintf(stderr,"unknown option: %s\n", a);
         return 1;
@@ -244,10 +352,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (DO_RESET) {
+        CHECK(LMS_Reset(dev));
+        printf("device reset to defaults\n");
+    }
     CHECK(LMS_Init(dev));
-
-    // CHECK(LMS_Reset(dev));
-    // printf("device reset to defaults\n");
 
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled\n");
@@ -271,8 +380,23 @@ int main(int argc, char **argv) {
         print_nco(dev);
     }
 
-    // CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
-    // printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
+    if (DO_CALIBRATE) {
+        CHECK(LMS_Calibrate(dev, LMS_CH_TX, CH, CAL_BW_HZ, 0));
+        printf("TX calibrated (bw=%.2f MHz)\n", CAL_BW_HZ / 1e6);
+    }
+
+    if (PRINT_CORRECTORS) {
+        print_tx_correctors(dev, CH);
+    }
+
+    if (SET_GI || SET_GQ || SET_PHASE || SET_DCI || SET_DCQ) {
+        CHECK(apply_manual_txtsp(dev, CH, SET_GI, MAN_GI, SET_GQ, MAN_GQ, SET_PHASE, MAN_PHASE, SET_DCI, MAN_DCI,
+                                 SET_DCQ, MAN_DCQ));
+        printf("Manual TXTSP correctors applied.\n");
+        if (PRINT_CORRECTORS) {
+            print_tx_correctors(dev, CH);
+        }
+    }
 
     txs.channel = CH;
     txs.isTx = true;
