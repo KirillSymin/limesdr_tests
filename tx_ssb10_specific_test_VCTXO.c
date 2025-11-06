@@ -325,8 +325,8 @@ int main(int argc, char** argv)
     uint16_t dac;
     LMS_VCTCXORead(dev, &dac);
     printf("Current VCTCXO DAC: %u\n", dac);
-    
-    uint16_t new_dac = 255;
+
+    uint16_t new_dac = 0;
     if (LMS_VCTCXOWrite(dev, new_dac) != 0) puts("Write failed");
     LMS_VCTCXORead(dev, &dac);
     printf("After set VCTCXO DAC: %u\n", dac);
