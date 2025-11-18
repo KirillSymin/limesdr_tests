@@ -131,8 +131,8 @@ int main(int argc, char** argv)
 
     CHECK(LMS_Init(dev));
 
-    CHECK(LMS_Reset(dev));
-    printf("device reset to defaults\n");
+    // CHECK(LMS_Reset(dev));
+    // printf("device reset to defaults\n");
 
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled\n");

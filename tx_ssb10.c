@@ -13,12 +13,12 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#define CH                0           // TX channel A
+#define CH                0
 #define NCO_INDEX         0
-#define FIFO_SIZE_SAMPLES (1<<17)     // big FIFO for smooth streaming
-#define BUF_SAMPLES       8192        // larger chunk reduces USB/IRQ churn
+#define FIFO_SIZE_SAMPLES (1<<17)
+#define BUF_SAMPLES       8192
 #define SEND_TIMEOUT_MS   1000
-#define TONE_SCALE_DEF    0.70        // 70% FS to avoid DAC clipping
+#define TONE_SCALE_DEF    0.70
 #define TX_GAIN_MIN_DB    0
 #define TX_GAIN_MAX_DB    73
 
@@ -42,7 +42,6 @@ static bool parse_bool(const char* s, bool* out){
     if (!strcasecmp(s,"0")||!strcasecmp(s,"false")||!strcasecmp(s,"no") ||!strcasecmp(s,"off")) { *out=false; return true; }
     return false;
 }
-// Parse Hz with optional k/M/G suffix (case-insensitive). Returns true on success.
 static bool parse_hz(const char* s, double* out){
     if (!s || !out) return false;
     char* end=NULL; double v=strtod(s,&end);
@@ -112,25 +111,23 @@ static void usage(const char* prog){
         "  -h, --help              Show this help\n\n", prog);
 }
 
-// ----------------- Helpers for register access / introspection -----------------
-static int set_mac_channel(lms_device_t* dev, int ch /*0=A,1=B*/){
+static int set_mac_channel(lms_device_t* dev, int ch){
     uint16_t v = 0;
     if (LMS_ReadLMSReg(dev, 0x0020, &v)) return -1;
-    // MAC[1:0]: 01=A, 10=B
     v = (uint16_t)((v & ~0x3) | (ch==0 ? 0x1 : 0x2));
     return LMS_WriteLMSReg(dev, 0x0020, v);
 }
-static void print_tx_correctors(lms_device_t* dev, int ch /*0=A,1=B*/){
+static void print_tx_correctors(lms_device_t* dev, int ch){
     if (set_mac_channel(dev, ch)) {
         fprintf(stderr, "WARN: can't set MAC for channel %c\n", ch? 'B':'A');
         return;
     }
     uint16_t reg_gq=0, reg_gi=0, reg_iq=0, reg_dc=0, reg_byp=0;
-    (void)LMS_ReadLMSReg(dev, 0x0201, &reg_gq); // GCORRQ[10:0]
-    (void)LMS_ReadLMSReg(dev, 0x0202, &reg_gi); // GCORRI[10:0]
-    (void)LMS_ReadLMSReg(dev, 0x0203, &reg_iq); // IQCORR[11:0] (tan(alpha/2))
-    (void)LMS_ReadLMSReg(dev, 0x0204, &reg_dc); // DCCORRI[15:8], DCCORRQ[7:0]
-    (void)LMS_ReadLMSReg(dev, 0x0208, &reg_byp); // bypass flags
+    (void)LMS_ReadLMSReg(dev, 0x0201, &reg_gq);
+    (void)LMS_ReadLMSReg(dev, 0x0202, &reg_gi);
+    (void)LMS_ReadLMSReg(dev, 0x0203, &reg_iq);
+    (void)LMS_ReadLMSReg(dev, 0x0204, &reg_dc);
+    (void)LMS_ReadLMSReg(dev, 0x0208, &reg_byp);
 
     int gq_u   = (int)(reg_gq & 0x07FF);
     int gi_u   = (int)(reg_gi & 0x07FF);
@@ -150,9 +147,9 @@ static void print_tx_correctors(lms_device_t* dev, int ch /*0=A,1=B*/){
     const double dci_norm = dci_s / 128.0;
     const double dcq_norm = dcq_s / 128.0;
 
-    const bool ph_bypass = (reg_byp & (1u<<0)) != 0; // PH_BYP
-    const bool gc_bypass = (reg_byp & (1u<<1)) != 0; // GC_BYP
-    const bool dc_bypass = (reg_byp & (1u<<3)) != 0; // DC_BYP
+    const bool ph_bypass = (reg_byp & (1u<<0)) != 0;
+    const bool gc_bypass = (reg_byp & (1u<<1)) != 0;
+    const bool dc_bypass = (reg_byp & (1u<<3)) != 0;
 
     printf("TXTSP correctors (CH %c):\n", ch? 'B':'A');
     printf("  Gain:   GCORRI=%4d  (%.6f, %+6.2f dB)%s,  GCORRQ=%4d  (%.6f, %+6.2f dB)%s\n",
@@ -164,9 +161,7 @@ static void print_tx_correctors(lms_device_t* dev, int ch /*0=A,1=B*/){
            (int)dci_s, dci_norm, dc_bypass?" [BYPASSED]":"",
            (int)dcq_s, dcq_norm, dc_bypass?" [BYPASSED]":"");
 }
-// ---------------------------------------------------------------------
 
-// Snapshot printer (called before/after calibration as requested)
 static void print_snapshot(lms_device_t* dev,
                            const char* title,
                            double requested_tx_lpf_bw_hz,
@@ -196,7 +191,6 @@ static void print_snapshot(lms_device_t* dev,
     printf("=============================================================\n");
 }
 
-// Write manual TXTSP correctors and un-bypass GC/PH/DC
 static int apply_manual_txtsp(lms_device_t* dev, int ch,
                               bool have_gi,    int gi,
                               bool have_gq,    int gq,
@@ -210,36 +204,35 @@ static int apply_manual_txtsp(lms_device_t* dev, int ch,
 
     if (have_gi) {
         gi = clampi(gi, 0, 2047);
-        rc |= LMS_WriteLMSReg(dev, 0x0202, (uint16_t)((uint16_t)gi & 0x07FF)); // GCORRI
+        rc |= LMS_WriteLMSReg(dev, 0x0202, (uint16_t)((uint16_t)gi & 0x07FF));
     }
     if (have_gq) {
         gq = clampi(gq, 0, 2047);
-        rc |= LMS_WriteLMSReg(dev, 0x0201, (uint16_t)((uint16_t)gq & 0x07FF)); // GCORRQ
+        rc |= LMS_WriteLMSReg(dev, 0x0201, (uint16_t)((uint16_t)gq & 0x07FF));
     }
     if (have_phase) {
         phase = clampi(phase, -2047, 2047);
-        uint16_t iq12 = (uint16_t)((uint16_t)phase & 0x0FFF);                  // IQCORR (12-bit signed)
+        uint16_t iq12 = (uint16_t)((uint16_t)phase & 0x0FFF);
         rc |= LMS_WriteLMSReg(dev, 0x0203, iq12);
     }
 
     if (have_dci || have_dcq) {
         uint16_t reg_dc = 0;
-        rc |= LMS_ReadLMSReg(dev, 0x0204, &reg_dc);                            // DCCORR
+        rc |= LMS_ReadLMSReg(dev, 0x0204, &reg_dc);
         if (have_dci) {
             int8_t dci_s = (int8_t)clampi(dci, -128, 127);
-            reg_dc = (uint16_t)((reg_dc & 0x00FFu) | ((uint16_t)(uint8_t)dci_s << 8)); // I in [15:8]
+            reg_dc = (uint16_t)((reg_dc & 0x00FFu) | ((uint16_t)(uint8_t)dci_s << 8));
         }
         if (have_dcq) {
             int8_t dcq_s = (int8_t)clampi(dcq, -128, 127);
-            reg_dc = (uint16_t)((reg_dc & 0xFF00u) | (uint16_t)(uint8_t)dcq_s);        // Q in [7:0]
+            reg_dc = (uint16_t)((reg_dc & 0xFF00u) | (uint16_t)(uint8_t)dcq_s);
         }
         rc |= LMS_WriteLMSReg(dev, 0x0204, reg_dc);
     }
 
-    // Clear PH/GC/DC bypass so manual values take effect
     uint16_t byp = 0;
     rc |= LMS_ReadLMSReg(dev, 0x0208, &byp);
-    byp &= (uint16_t)~((1u<<0) | (1u<<1) | (1u<<3)); // clear PH_BYP (bit0), GC_BYP (bit1), DC_BYP (bit3)
+    byp &= (uint16_t)~((1u<<0) | (1u<<1) | (1u<<3));
     rc |= LMS_WriteLMSReg(dev, 0x0208, byp);
 
     return rc;
@@ -247,25 +240,22 @@ static int apply_manual_txtsp(lms_device_t* dev, int ch,
 
 int main(int argc, char** argv)
 {
-    // Defaults
     double HOST_SR_HZ      = 5e6;
     int    OVERSAMPLE      = 32;
     double TX_LPF_BW_HZ    = 20e6;
     double LO_HZ           = 30e6;
     double NCO_FREQ_HZ     = 15e6;
     bool   NCO_DOWNCONVERT = true;
-    int    TX_GAIN_DB      = 40;   // target
-    int    TX_GAIN_START   = 0;    // ramp start
-    int    RAMP_MS         = 2000; // total ramp time
-    int    RAMP_INTERVAL_MS= 20;   // ramp step
+    int    TX_GAIN_DB      = 40;
+    int    TX_GAIN_START   = 0;
+    int    RAMP_MS         = 2000;
+    int    RAMP_INTERVAL_MS= 20;
     double TONE_SCALE      = TONE_SCALE_DEF;
     bool   DO_CAL          = false;
 
-    // Manual TXTSP correctors (off unless specified)
     bool SET_GI=false, SET_GQ=false, SET_PHASE=false, SET_DCI=false, SET_DCQ=false;
     int  MAN_GI=0,     MAN_GQ=0,     MAN_PHASE=0,     MAN_DCI=0,     MAN_DCQ=0;
 
-    // Arg parsing
     for (int i=1; i<argc; i++){
         const char* a = argv[i];
         if (!strcmp(a,"-h") || !strcmp(a,"--help")) { usage(argv[0]); return 0; }
@@ -287,7 +277,6 @@ int main(int argc, char** argv)
 
         if (!strcmp(a,"--calibrate")){ NEEDVAL(); if(!parse_bool(argv[++i], &DO_CAL)) { fprintf(stderr,"Bad --calibrate\n"); return 1; } continue; }
 
-        // Manual correctors
         if (!strcmp(a,"--set-gain-i")){ NEEDVAL(); SET_GI=true;    MAN_GI    = (int)strtol(argv[++i], NULL, 0); MAN_GI    = clampi(MAN_GI,    0, 2047); continue; }
         if (!strcmp(a,"--set-gain-q")){ NEEDVAL(); SET_GQ=true;    MAN_GQ    = (int)strtol(argv[++i], NULL, 0); MAN_GQ    = clampi(MAN_GQ,    0, 2047); continue; }
         if (!strcmp(a,"--set-phase")) { NEEDVAL(); SET_PHASE=true; MAN_PHASE = (int)strtol(argv[++i], NULL, 0); MAN_PHASE = clampi(MAN_PHASE,-2047, 2047); continue; }
@@ -299,7 +288,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Clamp/check
     TX_GAIN_DB    = clampi(TX_GAIN_DB,    TX_GAIN_MIN_DB, TX_GAIN_MAX_DB);
     TX_GAIN_START = clampi(TX_GAIN_START, TX_GAIN_MIN_DB, TX_GAIN_MAX_DB);
     if (RAMP_INTERVAL_MS < 1) RAMP_INTERVAL_MS = 1;
@@ -313,13 +301,11 @@ int main(int argc, char** argv)
 
     signal(SIGINT, on_sigint);
 
-    // 1) Open device
     lms_info_str_t list[8];
     int n = LMS_GetDeviceList(list);
     if (n < 1) { fprintf(stderr,"No LimeSDR found\n"); return 1; }
     if (LMS_Open(&dev, list[0], NULL)) { fprintf(stderr,"LMS_Open failed: %s\n", LMS_GetLastErrorMessage()); return 1; }
 
-    // 2) Basic setup
     CHECK(LMS_Init(dev));
 
     if (DO_CAL) {
@@ -330,31 +316,25 @@ int main(int argc, char** argv)
     CHECK(LMS_EnableChannel(dev, LMS_CH_TX, CH, true));
     printf("TX channel enabled.\n");
 
-    // Sample rates
     CHECK(LMS_SetSampleRate(dev, HOST_SR_HZ, OVERSAMPLE));
     print_sr(dev);
 
-    // TX LPF/BW
     CHECK(LMS_SetLPFBW(dev, LMS_CH_TX, CH, TX_LPF_BW_HZ));
 
-    // Set initial gain (start of ramp)
     CHECK(LMS_SetGaindB(dev, LMS_CH_TX, CH, TX_GAIN_START));
     print_gain(dev);
 
-    // LO
     CHECK(LMS_SetLOFrequency(dev, LMS_CH_TX, CH, LO_HZ));
     print_lo(dev);
 
-    // 3) NCO -> RF sine at LO ± NCO
     {
         double freqs[16]={0};
-        freqs[NCO_INDEX] = NCO_FREQ_HZ; // magnitude; sign via dir flag below
-        CHECK(LMS_SetNCOFrequency(dev, true, CH, freqs, 0.0));              // dir_tx=true
+        freqs[NCO_INDEX] = NCO_FREQ_HZ;
+        CHECK(LMS_SetNCOFrequency(dev, true, CH, freqs, 0.0));
         CHECK(LMS_SetNCOIndex    (dev, true, CH, NCO_INDEX, NCO_DOWNCONVERT));
         print_nco(dev);
     }
 
-    // ---- Parameter snapshot(s) before/after calibration as requested ----
     print_snapshot(dev, DO_CAL ? "BEFORE calibration" : "Parameters (calibration OFF)",
                    TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
 
@@ -365,12 +345,10 @@ int main(int argc, char** argv)
         if (calib_rc) fprintf(stderr,"LMS_Calibrate returned %d: %s\n", calib_rc, LMS_GetLastErrorMessage());
         else          printf("Calibration OK.\n");
 
-        // Print AFTER calibration snapshot
         print_snapshot(dev, "AFTER calibration",
                        TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
     }
 
-    // If manual correctors are requested, apply them now (after calibration so they override)
     if (SET_GI || SET_GQ || SET_PHASE || SET_DCI || SET_DCQ) {
         CHECK(apply_manual_txtsp(dev, CH,
                                  SET_GI, MAN_GI,
@@ -381,9 +359,7 @@ int main(int argc, char** argv)
         print_snapshot(dev, DO_CAL ? "AFTER manual correctors (override calibration)" : "AFTER manual correctors",
                        TX_LPF_BW_HZ, NCO_FREQ_HZ, NCO_DOWNCONVERT, TONE_SCALE);
     }
-    // --------------------------------------------------------------------
 
-    // 4) TX stream
     memset(&txs, 0, sizeof(txs));
     txs.channel  = CH;
     txs.isTx     = true;
@@ -393,7 +369,6 @@ int main(int argc, char** argv)
     CHECK(LMS_StartStream(&txs));
     printf("TX stream started (fifo=%d samples, fmt=I16).\n", FIFO_SIZE_SAMPLES);
 
-    // Baseband: constant DC IQ -> the NCO turns this into an RF sine at LO ± NCO.
     buf = (int16_t*)malloc(2*BUF_SAMPLES*sizeof(int16_t));
     if (!buf) { fprintf(stderr,"malloc failed\n"); goto cleanup; }
     const int16_t I = (int16_t)(TONE_SCALE * 32767.0);
@@ -408,7 +383,6 @@ int main(int argc, char** argv)
            NCO_DOWNCONVERT?"down":"up");
     printf("Ctrl+C to stop.\n");
 
-    // 5) Stream loop + gain ramp
     const bool use_ramp = (RAMP_MS > 0) && (TX_GAIN_DB != TX_GAIN_START);
     const int  total_delta = TX_GAIN_DB - TX_GAIN_START;
     const int  steps = use_ramp ? (RAMP_MS + RAMP_INTERVAL_MS - 1) / RAMP_INTERVAL_MS : 1;
@@ -416,7 +390,7 @@ int main(int argc, char** argv)
 
     uint64_t t0 = now_ms();
     uint64_t t_next = t0 + (use_ramp ? (uint64_t)RAMP_INTERVAL_MS : UINT64_MAX);
-    double   g_accum = (double)TX_GAIN_START; // track fractional dB
+    double   g_accum = (double)TX_GAIN_START;
     int      g_last_applied = TX_GAIN_START;
 
     while (keep_running) {
@@ -426,7 +400,6 @@ int main(int argc, char** argv)
             break;
         }
 
-        // gain ramp handler
         if (use_ramp) {
             uint64_t now = now_ms();
             while (now >= t_next && keep_running) {
@@ -459,7 +432,6 @@ int main(int argc, char** argv)
     printf("\nSIGINT detected: muting TX and shutting down safely...\n");
 
 cleanup:
-    // Graceful mute: push one zero buffer so the last burst is silence
     if (txs.handle) {
         int16_t* z = (int16_t*)calloc(2*BUF_SAMPLES, sizeof(int16_t));
         if (z){
