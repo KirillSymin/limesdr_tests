@@ -213,14 +213,6 @@ def main():
             f"mode={'down' if NCO_DOWNCONVERT else 'up'}convert"
         )
 
-        # Калибровка TX (аналог LMS_Calibrate для TX)
-        # SoapyLMS7 поддерживает writeSetting(\"CALIBRATE_TX\", bw) 
-        # try:
-        #     sdr.writeSetting("CALIBRATE_TX", str(CAL_BW_HZ))
-        #     print(f"TX calibrated (bw={CAL_BW_HZ/1e6:.2f} MHz)")
-        # except Exception as ex:
-        #     print(f"CALIBRATE_TX failed: {ex}", file=sys.stderr)
-
         # Настраиваем TX-стрим
         tx_stream = sdr.setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, [CH])
         sdr.activateStream(tx_stream)
