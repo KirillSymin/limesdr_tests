@@ -288,8 +288,8 @@ def main(argv=None):
         # -----------------------------
         CHECK(lime.LMS_Init(dev), "LMS_Init")
 
-        CHECK(lime.LMS_Reset(dev), "LMS_Reset")
-        print("device reset to defaults")
+        # CHECK(lime.LMS_Reset(dev), "LMS_Reset")
+        # print("device reset to defaults")
 
         CHECK(lime.LMS_EnableChannel(dev, LMS_CH_TX, CH, True),
               "LMS_EnableChannel(TX)")
