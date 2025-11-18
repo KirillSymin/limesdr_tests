@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-Пример: TX-тон на LimeSDR через SoapySDR/SoapyLMS7.
-
-Требуется:
-  pip install numpy
-  # и установленный LimeSuite + SoapySDR + модуль SoapyLMS7 (driver=lime)
-"""
-
 import sys
 import signal
 
@@ -190,7 +181,7 @@ def main():
         try:
             sdr.writeSetting("OVERSAMPLING", str(OVERSAMPLE))
         except Exception:
-            pass
+            print('set OVERSAMPLING error')
 
         host_sr = sdr.getSampleRate(SOAPY_SDR_TX, CH)
         print(
@@ -224,11 +215,11 @@ def main():
 
         # Калибровка TX (аналог LMS_Calibrate для TX)
         # SoapyLMS7 поддерживает writeSetting(\"CALIBRATE_TX\", bw) 
-        try:
-            sdr.writeSetting("CALIBRATE_TX", str(CAL_BW_HZ))
-            print(f"TX calibrated (bw={CAL_BW_HZ/1e6:.2f} MHz)")
-        except Exception as ex:
-            print(f"CALIBRATE_TX failed: {ex}", file=sys.stderr)
+        # try:
+        #     sdr.writeSetting("CALIBRATE_TX", str(CAL_BW_HZ))
+        #     print(f"TX calibrated (bw={CAL_BW_HZ/1e6:.2f} MHz)")
+        # except Exception as ex:
+        #     print(f"CALIBRATE_TX failed: {ex}", file=sys.stderr)
 
         # Настраиваем TX-стрим
         tx_stream = sdr.setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, [CH])
