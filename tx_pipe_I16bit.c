@@ -12,6 +12,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <time.h>
 
 #define CH 0
 #define NCO_INDEX 0
