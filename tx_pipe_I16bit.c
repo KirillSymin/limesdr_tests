@@ -174,14 +174,14 @@ static int apply_manual_txtsp(lms_device_t *dev, int ch, bool have_gi, int gi, b
 
 int main(int argc, char **argv) {
     int OVERSAMPLE = 32;
-    double TX_LPF_BW_HZ = 20e6;
+    double TX_LPF_BW_HZ = 30e6;
     double LO_HZ = 30e6;
     double NCO_FREQ_HZ = 15e6;
     bool NCO_DOWNCONVERT = true;
     int TX_GAIN_DB = 40;
     double CAL_BW_HZ = -1;
 
-    double HOST_SR_HZ = 1e6;       // MUST be set with --sample-rate
+    double HOST_SR_HZ = 5e6;       // MUST be set with --sample-rate
     const char *FIFO_PATH = NULL;  // MUST be set with --fifo
     double SCALE = 1.0;
 
@@ -323,8 +323,17 @@ int main(int argc, char **argv) {
     const size_t bytes_per_frame = 2 * sizeof(int16_t); // I + Q, 16-bit each
     const size_t bytes_per_chunk = BUF_SAMPLES * bytes_per_frame;
 
+    lms_stream_status_t st;
+    memset(&st, 0, sizeof(st));
+
+    time_t last = time(NULL);
+
     while (keep_running) {
+        struct timespec t1, t2;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
         ssize_t got = read(fifo_fd, buf, bytes_per_chunk);
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+
         if (got < 0) {
             if (errno == EINTR)
                 continue;
@@ -334,6 +343,12 @@ int main(int argc, char **argv) {
         if (got == 0) {
             fprintf(stderr, "FIFO EOF (writer closed), stopping\n");
             break;
+        }
+
+        double dt = (t2.tv_sec - t1.tv_sec) +
+                    (t2.tv_nsec - t1.tv_nsec)/1e9;
+        if (dt > 0.01) {
+            fprintf(stderr, "read from fifo blocked %.3f s\n", dt);
         }
 
         if (SCALE != 1.0) {
@@ -356,6 +371,15 @@ int main(int argc, char **argv) {
             if (LMS_SendStream(&txs, buf, (int)frames, &meta, SEND_TIMEOUT_MS) < 0) {
                 fprintf(stderr, "LMS_SendStream error: %s\n", LMS_GetLastErrorMessage());
                 break;
+            }
+        }
+
+        time_t now = time(NULL);
+        if (now != last) {
+            last = now;
+            if (!LMS_GetStreamStatus(&txs, &st)) {
+                printf("TX status: fifo=%u, underrun=%u, overrun=%u\n",
+                       st.fifoFilledCount, st.underrun, st.overrun);
             }
         }
     }

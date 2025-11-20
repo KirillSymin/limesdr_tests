@@ -18,7 +18,11 @@ def send_iq_to_fifo(fifo_path: str, i: np.ndarray, q: np.ndarray) -> None:
     interleaved[1::2] = q
 
     with open(fifo_path, "wb", buffering=0) as f:
+        t1 = time.perf_counter()
         f.write(interleaved.tobytes())
+        t2 = time.perf_counter()
+        if t2 - t1 > 0.01:
+            print("WARNING: fifo write blocked", t2 - t1)
 
 
 def stream_wav_to_fifo(wav_path: str, fifo_path: str, chunk_samples: int = 4096, loop: bool = False):
